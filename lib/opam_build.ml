@@ -5,6 +5,7 @@ let cache ~variant =
   match Variant.os variant with
   | `linux -> [ Obuilder_spec.Cache.v download_cache ~target:"/home/opam/.opam/download-cache" ]
   | `FreeBSD -> [ Obuilder_spec.Cache.v download_cache ~target:"/usr/home/opam/.opam/download-cache" ]
+  | `Windows_1809 | `Windows -> []
   | `macOS -> [ Obuilder_spec.Cache.v download_cache ~target:"/Users/mac1000/.opam/download-cache";
                 Obuilder_spec.Cache.v "homebrew" ~target:"/Users/mac1000/Library/Caches/Homebrew" ]
 let network = ["host"]
@@ -59,6 +60,11 @@ let opam_install ~variant ~opam_version ~pin ~lower_bounds ~with_tests ~pkg =
       else ""
     in
     run ~cache:(if with_tests then [] else cache) ~network:(if with_tests then [] else network)
+      {|(opam env > e.bat) && (echo opam switch >> e.bat) && (echo %sopam reinstall%s%s%s %s >> e.bat) && e.bat|}
+      depext with_tests_opt verbose update_invariant pkg_s
+  ]
+
+(*
       {|%sopam reinstall%s%s%s %s;
         res=$?;
         test "$res" != 31 && exit "$res";
@@ -78,46 +84,55 @@ let opam_install ~variant ~opam_version ~pin ~lower_bounds ~with_tests ~pkg =
       (Variant.distribution variant)
       pkg_s
   ]
+*)
 
 let setup_repository ~variant ~for_docker ~opam_version =
   let open Obuilder_spec in
+  let user = match Variant.os variant with
+    | `Windows_1809 | `Windows -> user_windows ~name:"ContainerAdministrator"
+    | _ -> user_unix ~uid:1000 ~gid:1000
+  in
   let home_dir = match Variant.os variant with
     | `macOS -> None
     | `FreeBSD -> Some "/usr/home/opam"
+    | `Windows_1809 | `Windows -> Some "/opam" (* obuilder adds prefix of c:/ *)
     | `linux -> Some "/home/opam"
   in
   let prefix = match Variant.os variant with
     | `macOS -> "~/local"
+    | `Windows_1809 | `Windows -> "C:\\cygwin64"
     | `FreeBSD -> "/usr/local"
     | `linux -> "/usr"
-  in
-  let ln = match Variant.os variant with
-    | `macOS -> "ln"
-    | `FreeBSD | `linux -> "sudo ln"
   in
   let opam_version_str = match opam_version with
     | `V2_0 -> "2.0"
     | `V2_1 -> "2.1"
     | `Dev -> "dev"
   in
+  let link_opam = match Variant.os variant with
+    | `macOS -> run "ln -f %s/bin/opam-%s %s/bin/opam" prefix opam_version_str prefix
+    | `FreeBSD | `linux -> run "sudo ln -f %s/bin/opam-%s %s/bin/opam" prefix opam_version_str prefix
+    | `Windows_1809 | `Windows -> run "del %s\\bin\\opam.exe && mklink %s\\bin\\opam.exe %s\\bin\\opam-%s.exe" prefix prefix prefix opam_version_str
+  in
   let opam_repo_args = match Variant.os variant with
     | `macOS -> " -k local" (* TODO: (copy ...) do not copy the content of .git or something like that and make the subsequent opam pin fail *)
-    | `FreeBSD | `linux -> ""
+    | `FreeBSD | `Windows_1809 | `Windows | `linux -> ""
   in
   let opamrc = match Variant.os variant with
     (* NOTE: [for_docker] is required because docker does not support bubblewrap in docker build *)
     (* docker run has --privileged but docker build does not have it *)
     (* so we need to remove the part re-enabling the sandbox. *)
     | `linux when not for_docker -> " --config .opamrc-sandbox"
-    | `FreeBSD | `macOS | `linux -> ""
+    | `FreeBSD | `Windows_1809 | `Windows | `macOS | `linux -> ""
     (* TODO: On macOS, the sandbox is always (and should be) enabled by default but does not have those ~/.opamrc-sandbox files *)
   in
-  user_unix ~uid:1000 ~gid:1000 ::
+  user ::
   (match home_dir with Some home_dir -> [workdir home_dir] | None -> []) @
   (* TODO: macOS seems to have a bug in (copy ...) so I am forced to remove the (workdir ...) here.
      Otherwise the "opam pin" after the "opam repository set-url" will fail (cannot find the new package for some reason) *)
-  run "%s -f %s/bin/opam-%s %s/bin/opam" ln prefix opam_version_str prefix ::
+  link_opam ::
   run ~network "opam init --reinit%s -ni" opamrc :: (* TODO: Remove ~network when https://github.com/ocurrent/ocaml-dockerfile/pull/132 is merged *)
+  run ~network "opam switch" ::
   env "OPAMDOWNLOADJOBS" "1" :: (* Try to avoid github spam detection *)
   env "OPAMERRLOGLEN" "0" :: (* Show the whole log if it fails *)
   env "OPAMSOLVERTIMEOUT" "500" :: (* Increase timeout. Poor mccs is doing its best *)
@@ -127,6 +142,7 @@ let setup_repository ~variant ~for_docker ~opam_version =
     run "rm -rf opam-repository/";
     copy ["."] ~dst:"opam-repository/";
     run "opam repository set-url%s --strict default opam-repository/" opam_repo_args;
+    run "opam repo add --rank 2 sunset git+https://github.com/ocaml-opam/opam-repository-mingw.git#sunset";
     run ~network "opam %s || true" (match opam_version with `V2_1 | `Dev -> "update --depexts" | `V2_0 -> "depext -u");
   ]
 

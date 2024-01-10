@@ -34,6 +34,8 @@ let pool_of_arch variant =
   let os = match Variant.os variant with
     | `macOS -> "macos"
     | `FreeBSD -> "freebsd"
+    | `Windows -> "windows"
+    | `Windows_1809 -> "windows-1809"
     | `linux -> "linux"
   in
   let arch = match Variant.arch variant with

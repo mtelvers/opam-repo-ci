@@ -15,6 +15,8 @@ type base =
   | Docker of Current_docker.Raw.Image.t
   | MacOS of string
   | FreeBSD of string
+  | Windows of string
+  | Windows_1809 of string
 
 type t
 

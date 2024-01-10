@@ -129,7 +129,8 @@ let statuses ss =
         (* TODO: Remove that *)
         let b =
           if Astring.String.is_prefix ~affix:"macos-homebrew" b ||
-             Astring.String.is_prefix ~affix:"freebsd" b
+             Astring.String.is_prefix ~affix:"freebsd" b ||
+             Astring.String.is_prefix ~affix:"windows" b
           then b^" (experimental)"
           else b
         in
