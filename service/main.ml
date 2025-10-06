@@ -34,6 +34,21 @@ let add_default_matching_log_rules () =
   let default_rules =
     let open Current.Log_matcher in
     [
+      { (* day10 status: no_solution *)
+        pattern = {|[\n]status: no_solution[\n]|};
+        report = {|[SKIP] Package not available|};
+        score = 100;
+      };
+      { (* day10 status: dependency_failed *)
+        pattern = {|[\n]status: dependency_failed[\n]|};
+        report = {|Dependency failed|};
+        score = 100;
+      };
+      { (* day10 status: failure *)
+        pattern = {|[\n]status: failure[\n]|};
+        report = {|Tests failed|};
+        score = 100;
+      };
       { (* Opam when the package or one of its dependencies has available: <non-compatible-condition> *)
         pattern = {|[\n]\[ERROR\] .+ unmet availability conditions: .+[\n]|};
         report = {|[SKIP] Package not available|};
@@ -125,15 +140,16 @@ let routes ~engine app github_auth =
   Routes.(s "login" /? nil @--> Current_github.Auth.login github_auth) ::
   Current_web.routes engine
 
-let main config mode app capnp_address github_auth submission_uri prometheus_config level =
+let main config mode app capnp_address github_auth day10_cache_dir day10_pool_size prometheus_config level =
   add_default_matching_log_rules ();
   Logs.set_level level;
   Lwt_main.run begin
     let listen_address = Capnp_rpc_unix.Network.Location.tcp ~host:"0.0.0.0" ~port:Conf.Capnp.internal_port in
     Capnp_setup.run ~listen_address ~secret_key:Conf.Capnp.secret_key
-      ~cap_file:Conf.Capnp.cap_file capnp_address >>= fun (vat, rpc_engine_resolver) ->
-    let ocluster = Capnp_rpc_unix.Vat.import_exn vat submission_uri in
-    let engine = Current.Engine.create ~config (Pipeline.v ~ocluster ~app) in
+      ~cap_file:Conf.Capnp.cap_file capnp_address >>= fun (_vat, rpc_engine_resolver) ->
+    (* Configure day10 instead of ocluster *)
+    let day10 = Opam_repo_ci.Day10_build.config ~cache_dir:day10_cache_dir ~pool_size:day10_pool_size () in
+    let engine = Current.Engine.create ~config (Pipeline.v ~day10 ~app) in
     Stdlib.Option.iter (fun r -> Capability.resolve_ok r (Api_impl.make_ci ~engine)) rpc_engine_resolver;
     let authn = Option.map Current_github.Auth.make_login_uri github_auth in
     let has_role =
@@ -142,7 +158,8 @@ let main config mode app capnp_address github_auth submission_uri prometheus_con
     in
     let routes = routes ~engine app github_auth in
     let site =
-      Current_web.Site.v ?authn ~has_role ~secure_cookies:true ~name:"opam-ci" routes
+      (* Current_web.Site.v ?authn ~has_role ~secure_cookies:true ~name:"opam-ci" routes *)
+      Current_web.Site.v ?authn ~has_role ~secure_cookies:false ~name:"opam-ci" routes
     in
     let prometheus =
       List.map (Lwt.map @@ Result.ok) (Prometheus_unix.serve prometheus_config)
@@ -157,13 +174,21 @@ let main config mode app capnp_address github_auth submission_uri prometheus_con
 
 open Cmdliner
 
-let submission_service =
+let day10_cache_dir =
   Arg.required @@
-  Arg.opt Arg.(some Capnp_rpc_unix.sturdy_uri) None @@
+  Arg.opt Arg.(some string) None @@
   Arg.info
-    ~doc:"The submission.cap file for the build scheduler service"
-    ~docv:"FILE"
-    ["submission-service"]
+    ~doc:"Cache directory for day10 builds"
+    ~docv:"DIR"
+    ["day10-cache-dir"]
+
+let day10_pool_size =
+  Arg.value @@
+  Arg.opt Arg.int 10 @@
+  Arg.info
+    ~doc:"Maximum number of concurrent day10 builds (default: 10)"
+    ~docv:"N"
+    ["day10-pool-size"]
 
 let cmd =
   let doc = "Build OCaml projects on GitHub" in
@@ -176,7 +201,8 @@ let cmd =
       $ Current_github.App.cmdliner
       $ Capnp_setup.cmdliner
       $ Current_github.Auth.cmdliner
-      $ submission_service
+      $ day10_cache_dir
+      $ day10_pool_size
       $ Prometheus_unix.opts
       $ Logs_cli.level ()))
 

@@ -1,7 +1,7 @@
 open Lwt.Infix
 open Current.Syntax
 
-let pool_size = 4
+let pool_size = 1
 let pool = Current.Pool.create ~label:"lint" pool_size
 
 let ( >>/= ) x f = x >>= fun x -> f (Result.get_ok x)

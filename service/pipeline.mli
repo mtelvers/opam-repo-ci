@@ -1,8 +1,7 @@
 (** The main opam-repo-ci pipeline. Tests everything configured for
-    GitHub application [app] using the server cluster connected to
-    via connection [ocluster]. *)
+    GitHub application [app] using the day10 health-check tool. *)
 val v :
-  ocluster:Cluster_api.Raw.Client.Submission.t Capnp_rpc_lwt.Sturdy_ref.t ->
+  day10:Opam_repo_ci.Day10_build.t ->
   app:Current_github.App.t ->
   unit -> unit Current.t
 

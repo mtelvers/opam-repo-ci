@@ -164,25 +164,34 @@ let extras ~build =
   ) [] default_compilers_full
 
 let test_revdeps (module Builder : Build_intf.S) ~opam_version ~master ~base ~variant ~pkgopt ~after ~new_pkgs source =
-  let revdeps =
-    Builder.list_revdeps ~opam_version ~base ~variant ~pkgopt ~new_pkgs ~master ~after source
-    |> Current.map OpamPackage.Set.elements
+  (* Only run revdeps if the build succeeded *)
+  let build_ok =
+    let+ state = Current.state ~hidden:true after in
+    match state with
+    | Ok () -> true
+    | Error _ -> false
   in
-  let pkg = Current.map (fun pkgopt -> pkgopt.Package_opt.pkg) pkgopt in
-  let urgent = Current.map (fun pkgopt -> pkgopt.Package_opt.urgent) pkgopt in
-  let build_revdep revdep =
-    let image =
-      let spec = revdep_spec ~variant ~opam_version ~revdep pkg in
-      Builder.v ~label:"build" ~base ~spec ~master ~urgent source
+  Node.bool_map (fun () ->
+    let revdeps =
+      Builder.list_revdeps ~opam_version ~base ~variant ~pkgopt ~new_pkgs ~master ~after source
+      |> Current.map OpamPackage.Set.elements
     in
-    let label = Current.map OpamPackage.to_string revdep
-    and build = Node.action `Built image
+    let pkg = Current.map (fun pkgopt -> pkgopt.Package_opt.pkg) pkgopt in
+    let urgent = Current.map (fun pkgopt -> pkgopt.Package_opt.urgent) pkgopt in
+    let build_revdep revdep =
+      let image =
+        let spec = revdep_spec ~variant ~opam_version ~revdep pkg in
+        Builder.v ~label:"build" ~base ~spec ~master ~urgent source
+      in
+      let label = Current.map OpamPackage.to_string revdep
+      and build = Node.action `Built image
+      in
+      Node.leaf_dyn ~label build
     in
-    Node.leaf_dyn ~label build
-  in
-  let tests = Node.list_map (module OpamPackage) build_revdep revdeps
-  and list_revdeps = Node.action `Analysed revdeps in
-  Node.actioned_branch ~label:"revdeps" list_revdeps [tests]
+    let tests = Node.list_map (module OpamPackage) build_revdep revdeps
+    and list_revdeps = Node.action `Analysed revdeps in
+    Node.actioned_branch ~label:"revdeps" list_revdeps [tests]
+  ) build_ok
 
 let get_base ~arch variant =
   match Variant.os variant with
@@ -284,4 +293,32 @@ let with_docker ~host_arch ~analysis ~lint ~master source =
   [
     Node.leaf ~label:"(lint)" (Node.action `Linted lint);
     Node.branch ~label:"compilers" (compilers ~minimal:true ~arch:host_arch ~build ());
+  ]
+
+(* Test against all supported OCaml compilers using day10 *)
+let compilers_day10 ~build =
+  let master_distro = Distro.tag_of_distro master_distro in
+  List.map (fun ocaml_version ->
+    (* Use the full version string for day10, not shortened *)
+    let variant = Variant.v ~arch:`X86_64 ~distro:master_distro ~compiler:(ocaml_version, None) in
+    let label = "ocaml-" ^ ocaml_version in
+    build ~opam_version:`Dev ~lower_bounds:false ~revdeps:true label variant
+  ) Day10_build.ocaml_versions
+
+let with_day10 ~day10 ~analysis ~lint ~master ~pr_commit source =
+  let module Builder : Build_intf.S = struct
+    let v = Day10_build.v day10 ~pr_commit
+    let list_revdeps = Day10_build.list_revdeps day10 ~pr_commit
+  end in
+
+  let pkgopts =
+    Current.map (fun x -> Analyse.Analysis.packages x
+    |> List.filter_map get_significant_available_pkg) analysis
+  in
+
+  let build = build (module Builder) ~analysis ~pkgopts ~master ~source in
+
+  [
+    Node.leaf ~label:"(lint)" (Node.action `Linted lint);
+    Node.branch ~label:"compilers" (compilers_day10 ~build);
   ]

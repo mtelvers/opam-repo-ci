@@ -70,3 +70,13 @@ val with_docker :
   lint:unit Current.t ->
   master:Current_git.Commit.t Current.t ->
   Current_git.Commit_id.t Current.t -> 'b Node.t list
+
+(** [with_day10 ~day10 ~analysis ~lint ~master commit] runs all the necessary
+    builds for [commit] relative to [master] using the day10 health-check tool. *)
+val with_day10 :
+  day10:Day10_build.t ->
+  analysis:Analyse.Analysis.t Current.t ->
+  lint:unit Current.t ->
+  master:Current_git.Commit.t Current.t ->
+  pr_commit:Current_git.Commit.t Current.t ->
+  Current_git.Commit_id.t Current.t -> 'b Node.t list

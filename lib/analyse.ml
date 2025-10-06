@@ -1,7 +1,7 @@
 open Lwt.Infix
 open Current.Syntax
 
-let pool = Current.Pool.create ~label:"analyse" 4
+let pool = Current.Pool.create ~label:"analyse" 1
 
 let ( >>!= ) = Lwt_result.bind
 

@@ -106,7 +106,7 @@ let summarise ~repo ~hash builds =
   in
   summary
 
-let test_pr ~ocluster ~master head =
+let test_pr ~day10 ~master head =
   let repo = Current.map Gh.Api.Commit.repo_id head in
   let commit_id = Current.map Gh.Api.Commit.id head in
   let hash = Current.map Git.Commit_id.hash commit_id in
@@ -120,16 +120,16 @@ let test_pr ~ocluster ~master head =
   let builds =
     Node.root
       (Node.leaf ~label:"(analysis)" (Node.action `Analysed latest_analysis)
-      :: Build.with_cluster ~ocluster ~analysis ~lint ~master commit_id)
+      :: Build.with_day10 ~day10 ~analysis ~lint ~master ~pr_commit:src commit_id)
   in
   summarise ~repo ~hash builds
 
-let test_repo ~ocluster ~push_status repo =
+let test_repo ~day10 ~push_status repo =
   let master, prs = get_prs repo in
   let master = latch ~label:"master" master in  (* Don't cancel builds while fetching updates to this *)
   let* () = Gh.set_active_refs ~repo prs in
   prs |> Current.list_iter ~collapse_key:"pr" (module Gh.Api.Commit) @@ fun head ->
-    test_pr ~ocluster ~master head
+    test_pr ~day10 ~master head
     |> (if push_status then Gh.update_status ~head
         else Current.ignore_value)
 
@@ -137,8 +137,7 @@ let set_metrics_primary_repo repo =
   let+ repo in
   Metrics.set_primary_repo @@ Gh.Api.Repo.id repo
 
-let v ~ocluster ~app () =
-  let ocluster = Cluster_build.config ~timeout:Conf.build_timeout ocluster in
+let v ~day10 ~app () =
   let installations = Gh.App.installations app in
   let* () = Gh.set_active_installations installations in
   installations |> Current.list_iter (module Gh.Installation) @@ fun installation ->
@@ -146,7 +145,7 @@ let v ~ocluster ~app () =
   repos |> Current.list_iter (module Gh.Api.Repo) @@ fun repo ->
   Current.all [
     set_metrics_primary_repo repo;
-    test_repo ~ocluster ~push_status:(Conf.profile = `Production) repo
+    test_repo ~day10 ~push_status:(Conf.profile = `Production) repo
   ]
 
 let set_index_local ~repo gref hash =
