@@ -15,6 +15,9 @@ type t
     @param pool_size Maximum number of concurrent day10 builds *)
 val config : cache_dir:string -> ?ssh_hosts:(Ocaml_version.arch * string) list -> pool_size:int -> unit -> t
 
+(** [ssh_hosts t] returns the list of configured SSH hosts *)
+val ssh_hosts : t -> (Ocaml_version.arch * string) list
+
 (** [v t ~pr_commit ~label ~spec ~master ~urgent ~base commit] runs the build
     specified by [spec], on top of [base], with the new [commit] as compared
     to the [master] branch. The job is labelled [label]. [urgent] specifies

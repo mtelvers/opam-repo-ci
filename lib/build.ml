@@ -296,14 +296,17 @@ let with_docker ~host_arch ~analysis ~lint ~master source =
   ]
 
 (* Test against all supported OCaml compilers using day10 *)
-let compilers_day10 ~build =
+(* Create builds for each configured SSH host architecture *)
+let compilers_day10 ~ssh_hosts ~build =
   let master_distro = Distro.tag_of_distro master_distro in
-  List.map (fun ocaml_version ->
-    (* Use the full version string for day10, not shortened *)
-    let variant = Variant.v ~arch:`X86_64 ~distro:master_distro ~compiler:(ocaml_version, None) in
-    let label = "ocaml-" ^ ocaml_version in
-    build ~opam_version:`Dev ~lower_bounds:false ~revdeps:true label variant
-  ) Day10_build.ocaml_versions
+  List.concat_map (fun (arch, _host) ->
+    List.map (fun ocaml_version ->
+      let variant = Variant.v ~arch ~distro:master_distro ~compiler:(ocaml_version, None) in
+      let arch_str = Ocaml_version.string_of_arch arch in
+      let label = Printf.sprintf "ocaml-%s-%s" ocaml_version arch_str in
+      build ~opam_version:`Dev ~lower_bounds:false ~revdeps:true label variant
+    ) Day10_build.ocaml_versions
+  ) ssh_hosts
 
 let with_day10 ~day10 ~analysis ~lint ~master ~pr_commit source =
   let module Builder : Build_intf.S = struct
@@ -317,8 +320,9 @@ let with_day10 ~day10 ~analysis ~lint ~master ~pr_commit source =
   in
 
   let build = build (module Builder) ~analysis ~pkgopts ~master ~source in
+  let ssh_hosts = Day10_build.ssh_hosts day10 in
 
   [
     Node.leaf ~label:"(lint)" (Node.action `Linted lint);
-    Node.branch ~label:"compilers" (compilers_day10 ~build);
+    Node.branch ~label:"compilers" (compilers_day10 ~ssh_hosts ~build);
   ]

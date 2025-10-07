@@ -7,44 +7,104 @@ module Git = Current_git
 
 let ( >>!= ) = Lwt_result.bind
 
-(* Cache of PR commit hash -> worktree path
+(* Cache of (PR commit hash, host) -> worktree path
    This allows multiple builds for the same PR to share a worktree.
    The mutex serializes git worktree operations. *)
 module Worktree_cache = struct
   let cache = Hashtbl.create 100
   let lock = Lwt_mutex.create ()
 
-  let get_or_create ~job ~master ~pr_commit =
+  let get_or_create ~job ~master ~pr_commit ~ssh_host =
     let pr_hash = Git.Commit.hash pr_commit in
+    let cache_key = (pr_hash, ssh_host) in
+    (* Treat "localhost" as local execution *)
+    let is_local = match ssh_host with
+      | None -> true
+      | Some "localhost" -> true
+      | Some _ -> false
+    in
     Lwt_mutex.with_lock lock (fun () ->
-      match Hashtbl.find_opt cache pr_hash with
+      match Hashtbl.find_opt cache cache_key with
       | Some path ->
           Current.Job.log job "Reusing existing worktree for PR %s" pr_hash;
           Lwt.return path
       | None ->
           Current.Job.log job "Creating new worktree for PR %s" pr_hash;
-          let repo_path = Git.Commit.repo master in
-          let worktree_dir = Filename.temp_file "day10-worktree-" ("-" ^ pr_hash) in
-          Unix.unlink worktree_dir;
+          begin match is_local with
+          | true ->
+              (* Local execution *)
+              let repo_path = Git.Commit.repo master in
+              let repo_path_str = Fpath.to_string repo_path in
+              let worktree_dir = Filename.temp_file "day10-worktree-" ("-" ^ pr_hash) in
+              Unix.unlink worktree_dir;
 
-          (* Create worktree from master *)
-          let repo_path_str = Fpath.to_string repo_path in
-          let worktree_cmd = ("", [|"git"; "-C"; repo_path_str; "worktree"; "add"; worktree_dir; Git.Commit.hash master|]) in
-          Current.Process.exec ~cancellable:false ~job worktree_cmd >>= function
-          | Error (`Msg msg) -> Lwt.fail (Failure msg)
-          | Ok () ->
-              (* Merge PR commit *)
-              let worktree_fpath = Fpath.v worktree_dir in
-              let merge_cmd = ("", [|"git"; "merge"; "--no-edit"; pr_hash|]) in
-              Current.Process.exec ~cwd:worktree_fpath ~cancellable:false ~job merge_cmd >>= function
+              (* Create worktree from master *)
+              let worktree_cmd = ("", [|"git"; "-C"; repo_path_str; "worktree"; "add"; worktree_dir; Git.Commit.hash master|]) in
+              Current.Process.exec ~cancellable:false ~job worktree_cmd >>= fun result1 ->
+              begin match result1 with
+              | Error (`Msg msg) -> Lwt.fail (Failure msg)
               | Ok () ->
-                  Hashtbl.add cache pr_hash worktree_dir;
-                  Lwt.return worktree_dir
-              | Error (`Msg msg) ->
-                  Current.Job.log job "Failed to merge PR commit";
-                  (* Clean up worktree *)
-                  let _ = Sys.command (Printf.sprintf "git -C %s worktree remove --force %s" repo_path_str worktree_dir) in
-                  Lwt.fail (Failure msg)
+                  (* Merge PR commit *)
+                  let worktree_fpath = Fpath.v worktree_dir in
+                  let merge_cmd = ("", [|"git"; "merge"; "--no-edit"; pr_hash|]) in
+                  Current.Process.exec ~cwd:worktree_fpath ~cancellable:false ~job merge_cmd >>= fun result2 ->
+                  begin match result2 with
+                  | Ok () ->
+                      Hashtbl.add cache cache_key worktree_dir;
+                      Lwt.return worktree_dir
+                  | Error (`Msg msg) ->
+                      Current.Job.log job "Failed to merge PR commit";
+                      (* Clean up worktree *)
+                      let _ = Sys.command (Printf.sprintf "git -C %s worktree remove --force %s" repo_path_str worktree_dir) in
+                      Lwt.fail (Failure msg)
+                  end
+              end
+
+          | false ->
+              (* Remote execution via SSH *)
+              let host = Option.get ssh_host in
+              let repo_path = "/var/cache/opam-repository" in
+              let worktree_dir = Printf.sprintf "/tmp/day10-worktree-%s" pr_hash in
+
+              (* Fetch PR commit on remote machine *)
+              let fetch_cmd_str = Printf.sprintf "git -C %s fetch origin %s"
+                (Filename.quote repo_path) (Filename.quote pr_hash) in
+              let fetch_cmd = ("", [|"ssh"; host; fetch_cmd_str|]) in
+              Current.Process.exec ~cancellable:false ~job fetch_cmd >>= fun result0 ->
+              begin match result0 with
+              | Error (`Msg msg) -> Lwt.fail (Failure msg)
+              | Ok () ->
+                  (* Create worktree from master on remote machine *)
+                  let master_hash = Git.Commit.hash master in
+                  let worktree_cmd_str = Printf.sprintf "git -C %s worktree add %s %s"
+                    (Filename.quote repo_path) (Filename.quote worktree_dir) (Filename.quote master_hash) in
+                  let worktree_cmd = ("", [|"ssh"; host; worktree_cmd_str|]) in
+                  Current.Process.exec ~cancellable:false ~job worktree_cmd >>= fun result1 ->
+                  begin match result1 with
+                  | Error (`Msg msg) ->
+                      Current.Job.log job "Failed to create worktree";
+                      Lwt.fail (Failure msg)
+                  | Ok () ->
+                      (* Merge PR commit on remote machine *)
+                      let merge_cmd_str = Printf.sprintf "cd %s && git merge --no-edit %s"
+                        (Filename.quote worktree_dir) (Filename.quote pr_hash) in
+                      let merge_cmd = ("", [|"ssh"; host; merge_cmd_str|]) in
+                      Current.Process.exec ~cancellable:false ~job merge_cmd >>= fun result2 ->
+                      begin match result2 with
+                      | Ok () ->
+                          Hashtbl.add cache cache_key worktree_dir;
+                          Lwt.return worktree_dir
+                      | Error (`Msg msg) ->
+                          Current.Job.log job "Failed to merge PR commit";
+                          (* Clean up worktree on remote machine *)
+                          let cleanup_cmd_str = Printf.sprintf "git -C %s worktree remove --force %s"
+                            (Filename.quote repo_path) (Filename.quote worktree_dir) in
+                          let _ = Sys.command (Printf.sprintf "ssh %s %s" host cleanup_cmd_str) in
+                          Lwt.fail (Failure msg)
+                      end
+                  end
+              end
+          end
     )
 end
 
@@ -94,8 +154,8 @@ module Op = struct
   module Value = Current.Unit
 
   (* Get or create a worktree for this PR (shared across all builds for the same PR) *)
-  let get_opam_repo ~job ~master ~pr_commit =
-    Worktree_cache.get_or_create ~job ~master ~pr_commit >|= fun path ->
+  let get_opam_repo ~job ~master ~pr_commit ~ssh_host =
+    Worktree_cache.get_or_create ~job ~master ~pr_commit ~ssh_host >|= fun path ->
     Ok path
 
   let build { config; master; pr_commit } job { Key.commit = _; package; ocaml_version; with_tests; arch } =
@@ -106,7 +166,14 @@ module Op = struct
     let ssh_host = List.assoc_opt arch ssh_hosts in
 
     (* Get or create shared worktree for this PR *)
-    get_opam_repo ~job ~master ~pr_commit >>!= fun repo_dir ->
+    get_opam_repo ~job ~master ~pr_commit ~ssh_host >>!= fun repo_dir ->
+
+    (* Use remote cache dir for SSH builds (but not localhost) *)
+    let is_remote = match ssh_host with
+      | None | Some "localhost" -> false
+      | Some _ -> true
+    in
+    let cache_dir = if is_remote then "/var/cache/day10" else cache_dir in
 
     (* Build day10 command with markdown output to stdout *)
     let pkg_full = OpamPackage.to_string package in
@@ -126,14 +193,14 @@ module Op = struct
         (String.concat " " cmd));
 
     (* Execute day10 (locally or via SSH) *)
-    let exec_cmd = match ssh_host with
-      | None ->
-          (* Local execution *)
-          ("", Array.of_list cmd)
-      | Some host ->
-          (* SSH execution *)
-          let remote_cmd = String.concat " " (List.map Filename.quote cmd) in
-          ("", Array.of_list ["ssh"; host; remote_cmd])
+    let exec_cmd = if is_remote then
+      (* SSH execution *)
+      let host = Option.get ssh_host in
+      let remote_cmd = String.concat " " (List.map Filename.quote cmd) in
+      ("", Array.of_list ["ssh"; host; remote_cmd])
+    else
+      (* Local execution *)
+      ("", Array.of_list cmd)
     in
 
     (* Run day10 - it returns non-zero on failure, and log matchers will
@@ -158,6 +225,8 @@ module BC = Current_cache.Make(Op)
 let config ~cache_dir ?(ssh_hosts=[]) ~pool_size () =
   let pool = Current.Pool.create ~label:"day10" pool_size in
   { cache_dir; ssh_hosts; pool }
+
+let ssh_hosts t = t.ssh_hosts
 
 let v t ~pr_commit ~label ~spec ~base:_ ~master ~urgent:_ commit =
   Current.component "%s" label |>
@@ -225,7 +294,7 @@ module List_revdeps_op = struct
     let ssh_host = List.assoc_opt arch ssh_hosts in
 
     (* Get or create shared worktree for this PR *)
-    Op.get_opam_repo ~job ~master ~pr_commit >>!= fun repo_dir ->
+    Op.get_opam_repo ~job ~master ~pr_commit ~ssh_host >>!= fun repo_dir ->
 
     (* Run day10 revdeps to get reverse dependencies of the package *)
     let output_file = Filename.temp_file "day10-revdeps-" ".txt" in
@@ -242,13 +311,17 @@ module List_revdeps_op = struct
     (* Execute and capture output *)
     let redirect_cmd = String.concat " " (List.map Filename.quote revdeps_cmd) ^ " > " ^ output_file in
 
-    let exec_cmd = match ssh_host with
-      | None ->
-          (* Local execution *)
-          ("", [|"sh"; "-c"; redirect_cmd|])
-      | Some host ->
-          (* SSH execution *)
-          ("", [|"ssh"; host; redirect_cmd|])
+    let is_remote = match ssh_host with
+      | None | Some "localhost" -> false
+      | Some _ -> true
+    in
+    let exec_cmd = if is_remote then
+      (* SSH execution *)
+      let host = Option.get ssh_host in
+      ("", [|"ssh"; host; redirect_cmd|])
+    else
+      (* Local execution *)
+      ("", [|"sh"; "-c"; redirect_cmd|])
     in
 
     Lwt.finalize

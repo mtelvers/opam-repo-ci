@@ -148,7 +148,11 @@ let main config mode app capnp_address github_auth day10_cache_dir day10_pool_si
     Capnp_setup.run ~listen_address ~secret_key:Conf.Capnp.secret_key
       ~cap_file:Conf.Capnp.cap_file capnp_address >>= fun (_vat, rpc_engine_resolver) ->
     (* Configure day10 instead of ocluster *)
-    let day10 = Opam_repo_ci.Day10_build.config ~cache_dir:day10_cache_dir ~pool_size:day10_pool_size () in
+    let ssh_hosts = [
+      (`X86_64, "localhost");
+      (`Aarch64, "ainia.caelum.ci.dev");
+    ] in
+    let day10 = Opam_repo_ci.Day10_build.config ~cache_dir:day10_cache_dir ~ssh_hosts ~pool_size:day10_pool_size () in
     let engine = Current.Engine.create ~config (Pipeline.v ~day10 ~app) in
     Stdlib.Option.iter (fun r -> Capability.resolve_ok r (Api_impl.make_ci ~engine)) rpc_engine_resolver;
     let authn = Option.map Current_github.Auth.make_login_uri github_auth in
