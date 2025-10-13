@@ -7,106 +7,20 @@ module Git = Current_git
 
 let ( >>!= ) = Lwt_result.bind
 
-(* Cache of (PR commit hash, host) -> worktree path
-   This allows multiple builds for the same PR to share a worktree.
-   The mutex serializes git worktree operations. *)
-module Worktree_cache = struct
-  let cache = Hashtbl.create 100
-  let lock = Lwt_mutex.create ()
-
-  let get_or_create ~job ~master ~pr_commit ~ssh_host =
-    let pr_hash = Git.Commit.hash pr_commit in
-    let cache_key = (pr_hash, ssh_host) in
-    (* Treat "localhost" as local execution *)
-    let is_local = match ssh_host with
-      | None -> true
-      | Some "localhost" -> true
-      | Some _ -> false
-    in
-    Lwt_mutex.with_lock lock (fun () ->
-      match Hashtbl.find_opt cache cache_key with
-      | Some path ->
-          Current.Job.log job "Reusing existing worktree for PR %s" pr_hash;
-          Lwt.return path
-      | None ->
-          Current.Job.log job "Creating new worktree for PR %s" pr_hash;
-          begin match is_local with
-          | true ->
-              (* Local execution *)
-              let repo_path = Git.Commit.repo master in
-              let repo_path_str = Fpath.to_string repo_path in
-              let worktree_dir = Filename.temp_file "day10-worktree-" ("-" ^ pr_hash) in
-              Unix.unlink worktree_dir;
-
-              (* Create worktree from master *)
-              let worktree_cmd = ("", [|"git"; "-C"; repo_path_str; "worktree"; "add"; worktree_dir; Git.Commit.hash master|]) in
-              Current.Process.exec ~cancellable:false ~job worktree_cmd >>= fun result1 ->
-              begin match result1 with
-              | Error (`Msg msg) -> Lwt.fail (Failure msg)
-              | Ok () ->
-                  (* Merge PR commit *)
-                  let worktree_fpath = Fpath.v worktree_dir in
-                  let merge_cmd = ("", [|"git"; "merge"; "--no-edit"; pr_hash|]) in
-                  Current.Process.exec ~cwd:worktree_fpath ~cancellable:false ~job merge_cmd >>= fun result2 ->
-                  begin match result2 with
-                  | Ok () ->
-                      Hashtbl.add cache cache_key worktree_dir;
-                      Lwt.return worktree_dir
-                  | Error (`Msg msg) ->
-                      Current.Job.log job "Failed to merge PR commit";
-                      (* Clean up worktree *)
-                      let _ = Sys.command (Printf.sprintf "git -C %s worktree remove --force %s" repo_path_str worktree_dir) in
-                      Lwt.fail (Failure msg)
-                  end
-              end
-
-          | false ->
-              (* Remote execution via SSH *)
-              let host = Option.get ssh_host in
-              let repo_path = "/var/cache/opam-repository" in
-              let worktree_dir = Printf.sprintf "/tmp/day10-worktree-%s" pr_hash in
-
-              (* Fetch PR commit on remote machine *)
-              let fetch_cmd_str = Printf.sprintf "git -C %s fetch origin %s"
-                (Filename.quote repo_path) (Filename.quote pr_hash) in
-              let fetch_cmd = ("", [|"ssh"; host; fetch_cmd_str|]) in
-              Current.Process.exec ~cancellable:false ~job fetch_cmd >>= fun result0 ->
-              begin match result0 with
-              | Error (`Msg msg) -> Lwt.fail (Failure msg)
-              | Ok () ->
-                  (* Create worktree from master on remote machine *)
-                  let master_hash = Git.Commit.hash master in
-                  let worktree_cmd_str = Printf.sprintf "git -C %s worktree add %s %s"
-                    (Filename.quote repo_path) (Filename.quote worktree_dir) (Filename.quote master_hash) in
-                  let worktree_cmd = ("", [|"ssh"; host; worktree_cmd_str|]) in
-                  Current.Process.exec ~cancellable:false ~job worktree_cmd >>= fun result1 ->
-                  begin match result1 with
-                  | Error (`Msg msg) ->
-                      Current.Job.log job "Failed to create worktree";
-                      Lwt.fail (Failure msg)
-                  | Ok () ->
-                      (* Merge PR commit on remote machine *)
-                      let merge_cmd_str = Printf.sprintf "cd %s && git merge --no-edit %s"
-                        (Filename.quote worktree_dir) (Filename.quote pr_hash) in
-                      let merge_cmd = ("", [|"ssh"; host; merge_cmd_str|]) in
-                      Current.Process.exec ~cancellable:false ~job merge_cmd >>= fun result2 ->
-                      begin match result2 with
-                      | Ok () ->
-                          Hashtbl.add cache cache_key worktree_dir;
-                          Lwt.return worktree_dir
-                      | Error (`Msg msg) ->
-                          Current.Job.log job "Failed to merge PR commit";
-                          (* Clean up worktree on remote machine *)
-                          let cleanup_cmd_str = Printf.sprintf "git -C %s worktree remove --force %s"
-                            (Filename.quote repo_path) (Filename.quote worktree_dir) in
-                          let _ = Sys.command (Printf.sprintf "ssh %s %s" host cleanup_cmd_str) in
-                          Lwt.fail (Failure msg)
-                      end
-                  end
-              end
-          end
-    )
-end
+(* Generate shell script that creates worktree with flock and runs a command *)
+let make_worktree_script ~worktree_dir ~repo_path ~pr_hash ~master_hash ~command =
+  Printf.sprintf
+    "flock /var/lock/day10-git.lock sh -c 'if ! test -d %s; then git -C %s fetch origin %s && git -C %s worktree add -f %s %s && cd %s && git merge --no-edit %s; fi' && cd %s && %s"
+    (Filename.quote worktree_dir)
+    (Filename.quote repo_path)
+    (Filename.quote pr_hash)
+    (Filename.quote repo_path)
+    (Filename.quote worktree_dir)
+    (Filename.quote master_hash)
+    (Filename.quote worktree_dir)
+    (Filename.quote pr_hash)
+    (Filename.quote worktree_dir)
+    command
 
 (* OCaml compiler versions to test against *)
 let ocaml_versions = [
@@ -153,11 +67,6 @@ module Op = struct
 
   module Value = Current.Unit
 
-  (* Get or create a worktree for this PR (shared across all builds for the same PR) *)
-  let get_opam_repo ~job ~master ~pr_commit ~ssh_host =
-    Worktree_cache.get_or_create ~job ~master ~pr_commit ~ssh_host >|= fun path ->
-    Ok path
-
   let build { config; master; pr_commit } job { Key.commit = _; package; ocaml_version; with_tests; arch } =
     let { cache_dir; ssh_hosts; pool } = config in
     Current.Job.start_with job ~pool ~level:Current.Level.Average >>= fun () ->
@@ -165,46 +74,57 @@ module Op = struct
     (* Find SSH host for this architecture *)
     let ssh_host = List.assoc_opt arch ssh_hosts in
 
-    (* Get or create shared worktree for this PR *)
-    get_opam_repo ~job ~master ~pr_commit ~ssh_host >>!= fun repo_dir ->
-
-    (* Use remote cache dir for SSH builds (but not localhost) *)
+    (* Determine if remote or local *)
     let is_remote = match ssh_host with
       | None | Some "localhost" -> false
       | Some _ -> true
     in
+
+    (* Calculate paths and hashes *)
+    let pr_hash = Git.Commit.hash pr_commit in
+    let master_hash = Git.Commit.hash master in
+    let worktree_dir = Printf.sprintf "/tmp/day10-worktree-%s" pr_hash in
     let cache_dir = if is_remote then "/var/cache/day10" else cache_dir in
 
-    (* Build day10 command with markdown output to stdout *)
+    (* Build day10 command *)
     let pkg_full = OpamPackage.to_string package in
     let base_cmd = [
       "day10"; "health-check";
       "--cache-dir"; cache_dir;
-      "--opam-repository"; repo_dir;
+      "--opam-repository"; worktree_dir;
       "--ocaml-version"; "ocaml." ^ ocaml_version;
-      "--md"; "-";
+      "--log";
     ] in
     let base_cmd = if with_tests then base_cmd @ ["--with-test"] else base_cmd in
-    let cmd = base_cmd @ [pkg_full] in
+    let day10_cmd = base_cmd @ [pkg_full] in
+
+    (* Determine repo path *)
+    let repo_path = if is_remote then
+      "/var/cache/opam-repository"
+    else
+      Fpath.to_string (Git.Commit.repo master)
+    in
+
+    (* Build the shell command with flock for worktree creation + day10 execution *)
+    let shell_script = make_worktree_script
+      ~worktree_dir ~repo_path ~pr_hash ~master_hash
+      ~command:(String.concat " " (List.map Filename.quote day10_cmd))
+    in
 
     (* Log reproduction instructions *)
     Current.Job.write job
       (Fmt.str "@.To reproduce locally:@.@.%s@.@."
-        (String.concat " " cmd));
+        (String.concat " " day10_cmd));
 
-    (* Execute day10 (locally or via SSH) *)
+    (* Execute (locally or via SSH) *)
     let exec_cmd = if is_remote then
-      (* SSH execution *)
       let host = Option.get ssh_host in
-      let remote_cmd = String.concat " " (List.map Filename.quote cmd) in
-      ("", Array.of_list ["ssh"; host; remote_cmd])
+      ("", [|"ssh"; host; shell_script|])
     else
-      (* Local execution *)
-      ("", Array.of_list cmd)
+      ("", [|"sh"; "-c"; shell_script|])
     in
 
-    (* Run day10 - it returns non-zero on failure, and log matchers will
-       scan the output (including YAML frontmatter) to classify the error *)
+    (* Run command *)
     Current.Process.exec ~cancellable:true ~job exec_cmd >>= function
     | Ok () -> Lwt_result.return ()
     | Error _ as e -> Lwt.return e
@@ -293,73 +213,59 @@ module List_revdeps_op = struct
     (* Find SSH host for this architecture *)
     let ssh_host = List.assoc_opt arch ssh_hosts in
 
-    (* Get or create shared worktree for this PR *)
-    Op.get_opam_repo ~job ~master ~pr_commit ~ssh_host >>!= fun repo_dir ->
+    (* Determine if remote or local *)
+    let is_remote = match ssh_host with
+      | None | Some "localhost" -> false
+      | Some _ -> true
+    in
+
+    (* Calculate paths and hashes *)
+    let pr_hash = Git.Commit.hash pr_commit in
+    let master_hash = Git.Commit.hash master in
+    let worktree_dir = Printf.sprintf "/tmp/day10-worktree-%s" pr_hash in
+
+    (* Determine repo path *)
+    let repo_path = if is_remote then
+      "/var/cache/opam-repository"
+    else
+      Fpath.to_string (Git.Commit.repo master)
+    in
 
     (* Run day10 revdeps to get reverse dependencies of the package *)
-    let output_file = Filename.temp_file "day10-revdeps-" ".txt" in
     let pkg_string = OpamPackage.to_string package in
     let revdeps_cmd = [
       "day10"; "revdeps";
-      "--opam-repository"; repo_dir;
+      "--opam-repository"; worktree_dir;
       "--ocaml-version"; "ocaml." ^ ocaml_version;
       pkg_string;
     ] in
 
     Current.Job.log job "Listing revdeps with: %s" (String.concat " " revdeps_cmd);
 
-    (* Execute and capture output *)
-    let redirect_cmd = String.concat " " (List.map Filename.quote revdeps_cmd) ^ " > " ^ output_file in
-
-    let is_remote = match ssh_host with
-      | None | Some "localhost" -> false
-      | Some _ -> true
+    (* Build the shell command with flock for worktree creation + day10 execution *)
+    let shell_script = make_worktree_script
+      ~worktree_dir ~repo_path ~pr_hash ~master_hash
+      ~command:(String.concat " " (List.map Filename.quote revdeps_cmd))
     in
+
     let exec_cmd = if is_remote then
-      (* SSH execution *)
       let host = Option.get ssh_host in
-      ("", [|"ssh"; host; redirect_cmd|])
+      ("", [|"ssh"; host; shell_script|])
     else
-      (* Local execution *)
-      ("", [|"sh"; "-c"; redirect_cmd|])
+      ("", [|"sh"; "-c"; shell_script|])
     in
 
-    Lwt.finalize
-      (fun () ->
-        Current.Process.exec ~cancellable:true ~job exec_cmd >>!= fun () ->
-
-        (* Read package list *)
-        let ic = ref None in
-        Lwt.finalize
-          (fun () ->
-            let ch = open_in output_file in
-            ic := Some ch;
-            let rec read_lines acc =
-              match input_line ch with
-              | line ->
-                  (* Parse package name from output *)
-                  (match OpamPackage.of_string_opt (String.trim line) with
-                  | Some pkg -> read_lines (pkg :: acc)
-                  | None -> read_lines acc)
-              | exception End_of_file -> List.rev acc
-            in
-            let packages = read_lines [] in
-
-            Current.Job.log job "Found %d reverse dependencies" (List.length packages);
-
-            Lwt_result.return (OpamPackage.Set.of_list packages)
-          )
-          (fun () ->
-            (* Ensure file handle is closed *)
-            (match !ic with Some ch -> (try close_in ch with _ -> ()) | None -> ());
-            Lwt.return_unit
-          )
-      )
-      (fun () ->
-        (* Cleanup output file *)
-        (try Unix.unlink output_file with _ -> ());
-        Lwt.return_unit
-      )
+    (* Execute and capture stdout *)
+    Current.Process.check_output ~cancellable:true ~job exec_cmd >>!= fun output ->
+    let packages =
+      output
+      |> String.split_on_char '\n'
+      |> List.filter_map (fun line ->
+          OpamPackage.of_string_opt (String.trim line)
+        )
+    in
+    Current.Job.log job "Found %d reverse dependencies" (List.length packages);
+    Lwt_result.return (OpamPackage.Set.of_list packages)
 
   let pp f { Key.commit; package; ocaml_version; arch } =
     Fmt.pf f "day10 list revdeps of %s (OCaml %s, %s) on %a"

@@ -35,17 +35,17 @@ let add_default_matching_log_rules () =
     let open Current.Log_matcher in
     [
       { (* day10 status: no_solution *)
-        pattern = {|[\n]status: no_solution[\n]|};
+        pattern = {|[\n]\[WARNING\] no_solution[\n]|};
         report = {|[SKIP] Package not available|};
         score = 100;
       };
       { (* day10 status: dependency_failed *)
-        pattern = {|[\n]status: dependency_failed[\n]|};
+        pattern = {|[\n]\[WARNING\] dependency_failed[\n]|};
         report = {|Dependency failed|};
         score = 100;
       };
       { (* day10 status: failure *)
-        pattern = {|[\n]status: failure[\n]|};
+        pattern = {|[\n]\[ERROR\] failure[\n]|};
         report = {|Tests failed|};
         score = 100;
       };
