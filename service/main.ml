@@ -140,7 +140,7 @@ let routes ~engine app github_auth =
   Routes.(s "login" /? nil @--> Current_github.Auth.login github_auth) ::
   Current_web.routes engine
 
-let main config mode app capnp_address github_auth day10_cache_dir day10_pool_size prometheus_config level =
+let main config mode app capnp_address github_auth day10_pool_size prometheus_config level =
   add_default_matching_log_rules ();
   Logs.set_level level;
   Lwt_main.run begin
@@ -152,7 +152,7 @@ let main config mode app capnp_address github_auth day10_cache_dir day10_pool_si
       (`X86_64, "localhost");
       (`Aarch64, "ainia.caelum.ci.dev");
     ] in
-    let day10 = Opam_repo_ci.Day10_build.config ~cache_dir:day10_cache_dir ~ssh_hosts ~pool_size:day10_pool_size () in
+    let day10 = Opam_repo_ci.Day10_build.config ~ssh_hosts ~pool_size:day10_pool_size () in
     let engine = Current.Engine.create ~config (Pipeline.v ~day10 ~app) in
     Stdlib.Option.iter (fun r -> Capability.resolve_ok r (Api_impl.make_ci ~engine)) rpc_engine_resolver;
     let authn = Option.map Current_github.Auth.make_login_uri github_auth in
@@ -178,14 +178,6 @@ let main config mode app capnp_address github_auth day10_cache_dir day10_pool_si
 
 open Cmdliner
 
-let day10_cache_dir =
-  Arg.required @@
-  Arg.opt Arg.(some string) None @@
-  Arg.info
-    ~doc:"Cache directory for day10 builds"
-    ~docv:"DIR"
-    ["day10-cache-dir"]
-
 let day10_pool_size =
   Arg.value @@
   Arg.opt Arg.int 10 @@
@@ -205,7 +197,6 @@ let cmd =
       $ Current_github.App.cmdliner
       $ Capnp_setup.cmdliner
       $ Current_github.Auth.cmdliner
-      $ day10_cache_dir
       $ day10_pool_size
       $ Prometheus_unix.opts
       $ Logs_cli.level ()))

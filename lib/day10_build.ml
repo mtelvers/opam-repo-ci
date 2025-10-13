@@ -7,8 +7,18 @@ module Git = Current_git
 
 let ( >>!= ) = Lwt_result.bind
 
+(* Standard paths on build workers *)
+let repo_path = "/var/cache/opam-repository"
+let cache_dir = "/var/cache/day10"
+
+(* Wrap command for execution via SSH or locally *)
+let wrap_exec ~ssh_host cmd =
+  match ssh_host with
+  | None | Some "localhost" -> ("", [|"sh"; "-c"; cmd|])
+  | Some host -> ("", [|"ssh"; host; cmd|])
+
 (* Generate shell script that creates worktree with flock and runs a command *)
-let make_worktree_script ~worktree_dir ~repo_path ~pr_hash ~master_hash ~command =
+let make_worktree_script ~worktree_dir ~pr_hash ~master_hash ~command =
   Printf.sprintf
     "flock /var/lock/day10-git.lock sh -c 'if ! test -d %s; then git -C %s fetch origin %s && git -C %s worktree add -f %s %s && cd %s && git merge --no-edit %s; fi' && cd %s && %s"
     (Filename.quote worktree_dir)
@@ -30,7 +40,6 @@ let ocaml_versions = [
 ]
 
 type t = {
-  cache_dir: string;
   ssh_hosts: (Ocaml_version.arch * string) list;
   pool: unit Current.Pool.t;
 }
@@ -68,46 +77,32 @@ module Op = struct
   module Value = Current.Unit
 
   let build { config; master; pr_commit } job { Key.commit = _; package; ocaml_version; with_tests; arch } =
-    let { cache_dir; ssh_hosts; pool } = config in
+    let { ssh_hosts; pool } = config in
     Current.Job.start_with job ~pool ~level:Current.Level.Average >>= fun () ->
 
     (* Find SSH host for this architecture *)
     let ssh_host = List.assoc_opt arch ssh_hosts in
 
-    (* Determine if remote or local *)
-    let is_remote = match ssh_host with
-      | None | Some "localhost" -> false
-      | Some _ -> true
-    in
-
     (* Calculate paths and hashes *)
     let pr_hash = Git.Commit.hash pr_commit in
     let master_hash = Git.Commit.hash master in
     let worktree_dir = Printf.sprintf "/tmp/day10-worktree-%s" pr_hash in
-    let cache_dir = if is_remote then "/var/cache/day10" else cache_dir in
 
     (* Build day10 command *)
     let pkg_full = OpamPackage.to_string package in
-    let base_cmd = [
+    let day10_cmd = [
       "day10"; "health-check";
       "--cache-dir"; cache_dir;
       "--opam-repository"; worktree_dir;
       "--ocaml-version"; "ocaml." ^ ocaml_version;
       "--log";
-    ] in
-    let base_cmd = if with_tests then base_cmd @ ["--with-test"] else base_cmd in
-    let day10_cmd = base_cmd @ [pkg_full] in
-
-    (* Determine repo path *)
-    let repo_path = if is_remote then
-      "/var/cache/opam-repository"
-    else
-      Fpath.to_string (Git.Commit.repo master)
+    ] @ (if with_tests then ["--with-test"] else [])
+      @ [pkg_full]
     in
 
     (* Build the shell command with flock for worktree creation + day10 execution *)
     let shell_script = make_worktree_script
-      ~worktree_dir ~repo_path ~pr_hash ~master_hash
+      ~worktree_dir ~pr_hash ~master_hash
       ~command:(String.concat " " (List.map Filename.quote day10_cmd))
     in
 
@@ -116,13 +111,8 @@ module Op = struct
       (Fmt.str "@.To reproduce locally:@.@.%s@.@."
         (String.concat " " day10_cmd));
 
-    (* Execute (locally or via SSH) *)
-    let exec_cmd = if is_remote then
-      let host = Option.get ssh_host in
-      ("", [|"ssh"; host; shell_script|])
-    else
-      ("", [|"sh"; "-c"; shell_script|])
-    in
+    (* Execute via SSH or locally *)
+    let exec_cmd = wrap_exec ~ssh_host shell_script in
 
     (* Run command *)
     Current.Process.exec ~cancellable:true ~job exec_cmd >>= function
@@ -142,9 +132,9 @@ end
 
 module BC = Current_cache.Make(Op)
 
-let config ~cache_dir ?(ssh_hosts=[]) ~pool_size () =
+let config ?(ssh_hosts=[]) ~pool_size () =
   let pool = Current.Pool.create ~label:"day10" pool_size in
-  { cache_dir; ssh_hosts; pool }
+  { ssh_hosts; pool }
 
 let ssh_hosts t = t.ssh_hosts
 
@@ -207,29 +197,16 @@ module List_revdeps_op = struct
   end
 
   let build { config; master; pr_commit } job { Key.commit = _; package; ocaml_version; arch } =
-    let { cache_dir = _; ssh_hosts; pool } = config in
+    let { ssh_hosts; pool } = config in
     Current.Job.start_with job ~pool ~level:Current.Level.Average >>= fun () ->
 
     (* Find SSH host for this architecture *)
     let ssh_host = List.assoc_opt arch ssh_hosts in
 
-    (* Determine if remote or local *)
-    let is_remote = match ssh_host with
-      | None | Some "localhost" -> false
-      | Some _ -> true
-    in
-
     (* Calculate paths and hashes *)
     let pr_hash = Git.Commit.hash pr_commit in
     let master_hash = Git.Commit.hash master in
     let worktree_dir = Printf.sprintf "/tmp/day10-worktree-%s" pr_hash in
-
-    (* Determine repo path *)
-    let repo_path = if is_remote then
-      "/var/cache/opam-repository"
-    else
-      Fpath.to_string (Git.Commit.repo master)
-    in
 
     (* Run day10 revdeps to get reverse dependencies of the package *)
     let pkg_string = OpamPackage.to_string package in
@@ -244,16 +221,11 @@ module List_revdeps_op = struct
 
     (* Build the shell command with flock for worktree creation + day10 execution *)
     let shell_script = make_worktree_script
-      ~worktree_dir ~repo_path ~pr_hash ~master_hash
+      ~worktree_dir ~pr_hash ~master_hash
       ~command:(String.concat " " (List.map Filename.quote revdeps_cmd))
     in
 
-    let exec_cmd = if is_remote then
-      let host = Option.get ssh_host in
-      ("", [|"ssh"; host; shell_script|])
-    else
-      ("", [|"sh"; "-c"; shell_script|])
-    in
+    let exec_cmd = wrap_exec ~ssh_host shell_script in
 
     (* Execute and capture stdout *)
     Current.Process.check_output ~cancellable:true ~job exec_cmd >>!= fun output ->
