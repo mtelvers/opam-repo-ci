@@ -6,14 +6,12 @@ val ocaml_versions : string list
 (** Configuration for day10 builds *)
 type t
 
-(** [config ~cache_dir ?ssh_hosts ~pool_size ()] creates a day10 build configuration.
+(** [config ssh_hosts_with_pools] creates a day10 build configuration.
 
-    @param cache_dir Directory to use for day10 caching
-    @param ssh_hosts Optional list of (architecture, hostname) pairs for running
-                     builds on remote systems via SSH. Empty list means all
-                     builds run locally.
-    @param pool_size Maximum number of concurrent day10 builds *)
-val config : cache_dir:string -> ?ssh_hosts:(Ocaml_version.arch * string) list -> pool_size:int -> unit -> t
+    @param ssh_hosts_with_pools List of (architecture, hostname, pool) tuples.
+                                Each host gets its own pool for concurrency control.
+                                Use "localhost" for local execution. *)
+val config : (Ocaml_version.arch * string * unit Current.Pool.t) list -> t
 
 (** [ssh_hosts t] returns the list of configured SSH hosts *)
 val ssh_hosts : t -> (Ocaml_version.arch * string) list

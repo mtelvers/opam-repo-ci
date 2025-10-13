@@ -40,8 +40,7 @@ let ocaml_versions = [
 ]
 
 type t = {
-  ssh_hosts: (Ocaml_version.arch * string) list;
-  pool: unit Current.Pool.t;
+  ssh_hosts: (Ocaml_version.arch * string * unit Current.Pool.t) list;
 }
 
 module Op = struct
@@ -77,11 +76,16 @@ module Op = struct
   module Value = Current.Unit
 
   let build { config; master; pr_commit } job { Key.commit = _; package; ocaml_version; with_tests; arch } =
-    let { ssh_hosts; pool } = config in
-    Current.Job.start_with job ~pool ~level:Current.Level.Average >>= fun () ->
+    let { ssh_hosts } = config in
 
-    (* Find SSH host for this architecture *)
-    let ssh_host = List.assoc_opt arch ssh_hosts in
+    (* Find SSH host and pool for this architecture *)
+    let ssh_host, pool =
+      match List.find_opt (fun (a, _, _) -> a = arch) ssh_hosts with
+      | Some (_, host, pool) -> (Some host, pool)
+      | None -> (None, List.find_map (fun (_, _, p) -> Some p) ssh_hosts |> Option.get)
+    in
+
+    Current.Job.start_with job ~pool ~level:Current.Level.Average >>= fun () ->
 
     (* Calculate paths and hashes *)
     let pr_hash = Git.Commit.hash pr_commit in
@@ -132,11 +136,11 @@ end
 
 module BC = Current_cache.Make(Op)
 
-let config ?(ssh_hosts=[]) ~pool_size () =
-  let pool = Current.Pool.create ~label:"day10" pool_size in
-  { ssh_hosts; pool }
+let config ssh_hosts_with_pools =
+  { ssh_hosts = ssh_hosts_with_pools }
 
-let ssh_hosts t = t.ssh_hosts
+let ssh_hosts t =
+  List.map (fun (arch, host, _pool) -> (arch, host)) t.ssh_hosts
 
 let v t ~pr_commit ~label ~spec ~base:_ ~master ~urgent:_ commit =
   Current.component "%s" label |>
@@ -197,11 +201,16 @@ module List_revdeps_op = struct
   end
 
   let build { config; master; pr_commit } job { Key.commit = _; package; ocaml_version; arch } =
-    let { ssh_hosts; pool } = config in
-    Current.Job.start_with job ~pool ~level:Current.Level.Average >>= fun () ->
+    let { ssh_hosts } = config in
 
-    (* Find SSH host for this architecture *)
-    let ssh_host = List.assoc_opt arch ssh_hosts in
+    (* Find SSH host and pool for this architecture *)
+    let ssh_host, pool =
+      match List.find_opt (fun (a, _, _) -> a = arch) ssh_hosts with
+      | Some (_, host, pool) -> (Some host, pool)
+      | None -> (None, List.find_map (fun (_, _, p) -> Some p) ssh_hosts |> Option.get)
+    in
+
+    Current.Job.start_with job ~pool ~level:Current.Level.Average >>= fun () ->
 
     (* Calculate paths and hashes *)
     let pr_hash = Git.Commit.hash pr_commit in
