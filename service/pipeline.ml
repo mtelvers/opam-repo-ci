@@ -154,7 +154,7 @@ let set_index_local ~repo gref hash =
   Index.(set_active_accounts @@ Account_set.singleton repo.Gh.Repo_id.owner);
   Index.set_active_refs ~repo [(gref, hash)]
 
-let local_test_pr ?test_config repo pr_branch () =
+let local_test_pr ?test_config ~day10 repo pr_branch () =
   let master = Git.Local.commit_of_ref repo "refs/heads/master" in
   let pr_gref = Printf.sprintf "refs/heads/%s" pr_branch in
   let pr_branch = Git.Local.commit_of_ref repo pr_gref in
@@ -172,7 +172,7 @@ let local_test_pr ?test_config repo pr_branch () =
   let builds =
     Node.root
       (Node.leaf ~label:"(analysis)" (Node.action `Analysed analysis)
-      :: Build.with_docker ~host_arch:Conf.host_arch ~analysis ~lint ~master pr_branch_id)
+      :: Build.with_day10 ~day10 ~analysis ~lint ~master ~pr_commit:pr_branch pr_branch_id)
   in
   summarise ~repo:dummy_repo ~hash:pr_hash builds
   |> Current.ignore_value

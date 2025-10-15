@@ -29,9 +29,16 @@ let main config mode capnp_address repo branch test_config no_web_server level =
   Logs.set_level level;
   Lwt_main.run begin
     let repo = Current_git.Local.v (Result.get_ok @@ Fpath.of_string repo) in
+    (* Configure day10 for local testing *)
+    let ssh_hosts_with_pools = [
+      (`X86_64, "localhost", Current.Pool.create ~label:"day10-x86_64" 10);
+      (`Aarch64, "ainia.caelum.ci.dev", Current.Pool.create ~label:"day10-aarch64" 10);
+      (`Ppc64le, "orithia.caelum.ci.dev", Current.Pool.create ~label:"day10-ppc64le" 10);
+    ] in
+    let day10 = Opam_repo_ci.Day10_build.config ssh_hosts_with_pools in
     let engine =
       Current.Engine.create ~config
-        (Pipeline.local_test_pr ?test_config repo branch)
+        (Pipeline.local_test_pr ?test_config ~day10 repo branch)
     in
     let listen_address =
       Capnp_rpc_unix.Network.Location.tcp

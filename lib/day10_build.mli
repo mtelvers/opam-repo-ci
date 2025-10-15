@@ -1,7 +1,7 @@
 (** Day10 build backend - replaces OCluster with day10 health-check tool *)
 
 (** OCaml compiler versions to test against *)
-val ocaml_versions : string list
+val ocaml_versions : unit -> string list
 
 (** Configuration for day10 builds *)
 type t

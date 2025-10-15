@@ -206,7 +206,7 @@ let get_base ~arch variant =
       in
       Spec.Docker repo_id
 
-let build (module Builder : Build_intf.S) ~analysis ~pkgopts ~master ~source ~opam_version ~lower_bounds ~revdeps label variant =
+let build ?(need_docker_base=true) (module Builder : Build_intf.S) ~analysis ~pkgopts ~master ~source ~opam_version ~lower_bounds ~revdeps label variant =
   let arch = Variant.arch variant in
   let analysis = with_label label analysis in
   let pkgopts =
@@ -222,7 +222,7 @@ let build (module Builder : Build_intf.S) ~analysis ~pkgopts ~master ~source ~op
     let pkg = Current.map (fun pkgopt -> pkgopt.Package_opt.pkg) pkgopt in
     let urgent = Current.return None in
     let has_tests = Current.map (fun pkgopt -> pkgopt.Package_opt.has_tests) pkgopt in
-    let base = get_base ~arch variant in
+    let base = if need_docker_base then get_base ~arch variant else Current.return (Spec.Macos "dummy") in
     let image =
       let spec = build_spec ~variant ~opam_version pkg in
       Builder.v ~label:"build" ~spec ~base ~master ~urgent source
@@ -305,7 +305,7 @@ let compilers_day10 ~ssh_hosts ~build =
       let arch_str = Ocaml_version.string_of_arch arch in
       let label = Printf.sprintf "ocaml-%s-%s" ocaml_version arch_str in
       build ~opam_version:`Dev ~lower_bounds:false ~revdeps:true label variant
-    ) Day10_build.ocaml_versions
+    ) (Day10_build.ocaml_versions ())
   ) ssh_hosts
 
 let with_day10 ~day10 ~analysis ~lint ~master ~pr_commit source =
@@ -319,7 +319,7 @@ let with_day10 ~day10 ~analysis ~lint ~master ~pr_commit source =
     |> List.filter_map get_significant_available_pkg) analysis
   in
 
-  let build = build (module Builder) ~analysis ~pkgopts ~master ~source in
+  let build = build ~need_docker_base:false (module Builder) ~analysis ~pkgopts ~master ~source in
   let ssh_hosts = Day10_build.ssh_hosts day10 in
 
   [

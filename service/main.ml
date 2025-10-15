@@ -41,7 +41,7 @@ let add_default_matching_log_rules () =
       };
       { (* day10 status: dependency_failed *)
         pattern = {|[\n]\[WARNING\] dependency_failed[\n]|};
-        report = {|Dependency failed|};
+        report = {|[SKIP] Dependency failed|};
         score = 100;
       };
       { (* day10 status: failure *)
@@ -140,7 +140,7 @@ let routes ~engine app github_auth =
   Routes.(s "login" /? nil @--> Current_github.Auth.login github_auth) ::
   Current_web.routes engine
 
-let main config mode app capnp_address github_auth day10_pool_size prometheus_config level =
+let main config mode app capnp_address github_auth prometheus_config level =
   add_default_matching_log_rules ();
   Logs.set_level level;
   Lwt_main.run begin
@@ -149,9 +149,10 @@ let main config mode app capnp_address github_auth day10_pool_size prometheus_co
       ~cap_file:Conf.Capnp.cap_file capnp_address >>= fun (_vat, rpc_engine_resolver) ->
     (* Configure day10 instead of ocluster *)
     let ssh_hosts_with_pools = [
-      (`X86_64, "localhost", Current.Pool.create ~label:"day10-x86_64" day10_pool_size);
-      (`Aarch64, "ainia.caelum.ci.dev", Current.Pool.create ~label:"day10-aarch64" day10_pool_size);
-      (`Ppc64le, "orithia.caelum.ci.dev", Current.Pool.create ~label:"day10-ppc64le" day10_pool_size);
+      (`X86_64, "basil.caelum.ci.dev", Current.Pool.create ~label:"day10-x86_64" 10);
+      (`Aarch64, "ainia.caelum.ci.dev", Current.Pool.create ~label:"day10-aarch64" 10);
+      (`Ppc64le, "orithia.caelum.ci.dev", Current.Pool.create ~label:"day10-ppc64le" 10);
+      (* `Riscv64, "carpenter.caelum.ci.dev", Current.Pool.create ~label:"day10-riscv64" 1 *)
     ] in
     let day10 = Opam_repo_ci.Day10_build.config ssh_hosts_with_pools in
     let engine = Current.Engine.create ~config (Pipeline.v ~day10 ~app) in
@@ -179,14 +180,6 @@ let main config mode app capnp_address github_auth day10_pool_size prometheus_co
 
 open Cmdliner
 
-let day10_pool_size =
-  Arg.value @@
-  Arg.opt Arg.int 10 @@
-  Arg.info
-    ~doc:"Maximum number of concurrent day10 builds (default: 10)"
-    ~docv:"N"
-    ["day10-pool-size"]
-
 let cmd =
   let doc = "Build OCaml projects on GitHub" in
   let info = Cmd.info "opam-repo-ci" ~doc ~envs:Conf.cmdliner_envs in
@@ -198,7 +191,6 @@ let cmd =
       $ Current_github.App.cmdliner
       $ Capnp_setup.cmdliner
       $ Current_github.Auth.cmdliner
-      $ day10_pool_size
       $ Prometheus_unix.opts
       $ Logs_cli.level ()))
 

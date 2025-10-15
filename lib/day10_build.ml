@@ -32,12 +32,10 @@ let make_worktree_script ~worktree_dir ~pr_hash ~master_hash ~command =
     (Filename.quote worktree_dir)
     command
 
-(* OCaml compiler versions to test against *)
-let ocaml_versions = [
-  "4.08.1"; "4.09.1"; "4.10.2"; "4.11.2";
-  "4.12.1"; "4.13.1"; "4.14.2";
-  "5.0.0"; "5.1.1"; "5.2.1"; "5.3.0";
-]
+(* OCaml compiler versions to test against - dynamically generated from ocaml-version library *)
+let ocaml_versions () =
+  Ocaml_version.Releases.(recent @ unreleased_betas)
+  |> List.map Ocaml_version.to_string
 
 type t = {
   ssh_hosts: (Ocaml_version.arch * string * unit Current.Pool.t) list;
@@ -151,8 +149,12 @@ let v t ~pr_commit ~label ~spec ~base:_ ~master ~urgent:_ commit =
 
   (* Extract package and test info from spec *)
   match ty with
-  | `Opam (`Build { Spec.with_tests; _ }, pkg) ->
-      let package = pkg in
+  | `Opam (`Build { Spec.with_tests; revdep; _ }, pkg) ->
+      (* When testing revdeps, test the revdep package, not the original package *)
+      let package = match revdep with
+        | Some revdep_pkg -> revdep_pkg  (* Test the reverse dependency *)
+        | None -> pkg                     (* Test the original package *)
+      in
 
       (* Extract OCaml version and architecture from variant *)
       let ocaml_version = Variant.ocaml_version_to_string variant in
