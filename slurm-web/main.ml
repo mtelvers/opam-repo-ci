@@ -1,0 +1,639 @@
+open Lwt.Syntax
+open Opam_repo_ci
+open Tyxml
+
+let log_src = Logs.Src.create "web" ~doc:"Web interface"
+module Log = (val Logs.src_log log_src : Logs.LOG)
+
+(* Configuration *)
+type config = {
+  port : int;
+  db_path : string;
+}
+
+let default_config =
+  let home = Sys.getenv "HOME" in
+  let base_dir = Filename.concat home "opam-ci-slurm" in
+  {
+    port = 8092;
+    db_path = Filename.concat base_dir "db.sqlite";
+  }
+
+(* HTML helpers *)
+let page ~title:page_title content =
+  let open Html in
+  html
+    (head (title (txt page_title)) [
+      style ~a:[a_mime_type "text/css"] [
+        txt {|
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #fafafa;
+            color: #333;
+          }
+          h1 {
+            font-size: 24px;
+            font-weight: 500;
+            margin: 20px 0 10px 0;
+            color: #000;
+          }
+          h2 {
+            font-size: 18px;
+            font-weight: 500;
+            margin: 20px 0 10px 0;
+            color: #333;
+          }
+          nav {
+            background: white;
+            padding: 10px 20px;
+            margin: -20px -20px 20px -20px;
+            border-bottom: 1px solid #ddd;
+          }
+          nav a {
+            margin-right: 20px;
+            color: #0366d6;
+            text-decoration: none;
+            font-size: 14px;
+          }
+          nav a:hover { text-decoration: underline; }
+
+          table {
+            border-collapse: collapse;
+            width: 100%;
+            background: white;
+            margin: 20px 0;
+            border: 1px solid #ddd;
+            font-size: 14px;
+          }
+          th, td {
+            padding: 8px 12px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+          }
+          th {
+            background: #fafafa;
+            font-weight: 600;
+            color: #555;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+          }
+          tr:last-child td { border-bottom: none; }
+          tbody tr:hover { background: #f6f8fa; }
+
+          .status-pending, .status-submitted {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 500;
+            background: #dbab0a;
+            color: white;
+          }
+          .status-running {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 500;
+            background: #0969da;
+            color: white;
+          }
+          .status-completed {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 500;
+            background: #1a7f37;
+            color: white;
+          }
+          .status-failed {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 500;
+            background: #cf222e;
+            color: white;
+          }
+          .status-cancelled {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 500;
+            background: #656d76;
+            color: white;
+          }
+
+          .pr-link {
+            color: #0366d6;
+            text-decoration: none;
+            font-weight: 500;
+          }
+          .pr-link:hover { text-decoration: underline; }
+
+          .summary {
+            background: white;
+            padding: 20px;
+            margin: 20px 0;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+          }
+          .summary p {
+            margin: 5px 0;
+            color: #555;
+            font-size: 14px;
+          }
+          .summary-item {
+            display: inline-block;
+            margin-right: 30px;
+          }
+          .summary-number {
+            font-size: 32px;
+            font-weight: 600;
+            color: #000;
+          }
+          .summary-label {
+            color: #666;
+            font-size: 14px;
+          }
+
+          .retry-btn {
+            background: #2da44e;
+            color: white;
+            border: 1px solid rgba(27, 31, 36, 0.15);
+            padding: 5px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            margin: 10px 0;
+          }
+          .retry-btn:hover {
+            background: #2c974b;
+          }
+
+          pre {
+            background: #f6f8fa;
+            color: #24292f;
+            padding: 16px;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+            font-size: 12px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            margin: 16px 0;
+          }
+
+          .tree-view {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            margin: 20px 0;
+          }
+          .package-group {
+            border-bottom: 1px solid #eee;
+          }
+          .package-group:last-child {
+            border-bottom: none;
+          }
+          .package-header {
+            padding: 12px 16px;
+            background: #fafafa;
+            font-weight: 600;
+            font-size: 14px;
+            color: #000;
+            border-bottom: 1px solid #eee;
+          }
+          .job-list {
+            padding: 0;
+            margin: 0;
+            list-style: none;
+          }
+          .job-item {
+            padding: 10px 16px 10px 32px;
+            border-bottom: 1px solid #f6f8fa;
+            display: flex;
+            align-items: center;
+            font-size: 13px;
+          }
+          .job-item:hover {
+            background: #f6f8fa;
+          }
+          .job-item:last-child {
+            border-bottom: none;
+          }
+          .job-variant {
+            flex: 0 0 240px;
+            font-family: ui-monospace, monospace;
+            color: #555;
+          }
+          .job-status {
+            flex: 0 0 100px;
+          }
+          .job-slurm-id {
+            flex: 0 0 100px;
+            font-family: ui-monospace, monospace;
+            font-size: 11px;
+            color: #666;
+          }
+          .job-exit-code {
+            flex: 0 0 80px;
+            color: #666;
+          }
+          .job-actions {
+            flex: 1;
+            text-align: right;
+          }
+          .job-actions a {
+            margin-left: 8px;
+            color: #0366d6;
+            text-decoration: none;
+            font-size: 12px;
+          }
+          .job-actions a:hover {
+            text-decoration: underline;
+          }
+          .job-actions .retry-btn {
+            margin: 0 0 0 8px;
+            padding: 3px 10px;
+            font-size: 12px;
+          }
+        |}
+      ];
+    ])
+    (body [
+      nav [
+        a ~a:[a_href "/"] [txt "Home"];
+        a ~a:[a_href "/prs"] [txt "Recent PRs"];
+      ];
+      div content
+    ])
+
+let status_class status =
+  "status-" ^ status
+
+(* Home page *)
+let home_page db =
+  Log.info (fun f -> f "Fetching recent PRs for home page");
+  let* prs = Db.get_recent_prs db ~limit:10 in
+  Log.info (fun f -> f "Found %d PRs" (List.length prs));
+
+  let pr_row pr =
+    let open Html in
+    let status_text = match pr.Db.status with
+      | "pending" -> "Pending"
+      | "running" -> "Running"
+      | "completed" -> "Completed"
+      | "failed" -> "Failed"
+      | _ -> pr.status
+    in
+    tr [
+      td [a ~a:[a_href (Printf.sprintf "/pr/%d" pr.pr_number); a_class ["pr-link"]]
+            [txt (Printf.sprintf "#%d" pr.pr_number)]];
+      td [txt (String.sub pr.commit_hash 0 (min 8 (String.length pr.commit_hash)))];
+      td ~a:[a_class [status_class pr.status]] [txt status_text];
+      td [txt (Printf.sprintf "%d / %d" pr.completed_jobs pr.total_jobs)];
+      td [txt (if pr.failed_jobs > 0 then Printf.sprintf "%d" pr.failed_jobs else "-")];
+    ] in
+
+  let content = Html.[
+    h1 [txt "OPAM CI - Slurm Edition"];
+    div ~a:[a_class ["summary"]] [
+      div ~a:[a_class ["summary-item"]] [
+        div ~a:[a_class ["summary-number"]] [txt (string_of_int (List.length prs))];
+        div ~a:[a_class ["summary-label"]] [txt "Recent PRs"];
+      ];
+    ];
+    h2 [txt "Recent Pull Requests"];
+    tablex ~thead:(thead [
+        tr [
+          th [txt "PR"];
+          th [txt "Commit"];
+          th [txt "Status"];
+          th [txt "Completed"];
+          th [txt "Failed"];
+        ]
+      ]) [
+      tbody (List.map pr_row prs);
+    ];
+  ] in
+
+  Lwt.return (page ~title:"OPAM CI" content)
+
+(* PR detail page *)
+let pr_page db pr_number =
+  let* pr_opt = Db.get_pr db pr_number in
+  match pr_opt with
+  | None ->
+      let content = Html.[
+        h1 [txt (Printf.sprintf "PR #%d" pr_number)];
+        p [txt "Not found"];
+      ] in
+      Lwt.return (page ~title:(Printf.sprintf "PR #%d" pr_number) content)
+  | Some pr ->
+      let* jobs = Db.get_jobs_by_pr db pr_number in
+
+      (* Group jobs by package *)
+      let jobs_by_package =
+        List.fold_left (fun acc (job : Db.job) ->
+          let existing = try List.assoc job.package acc with Not_found -> [] in
+          (job.package, job :: existing) :: List.remove_assoc job.package acc
+        ) [] jobs
+        |> List.map (fun (pkg, jobs) -> (pkg, List.rev jobs))
+        |> List.sort (fun (a, _) (b, _) -> String.compare a b)
+      in
+
+      let job_item (j : Db.job) =
+        let open Html in
+        let status_text = match j.status with
+          | "pending" -> "Pending"
+          | "submitted" -> "Submitted"
+          | "running" -> "Running"
+          | "completed" -> "Completed"
+          | "failed" -> "Failed"
+          | "cancelled" -> "Cancelled"
+          | _ -> j.status
+        in
+        let slurm_id = match j.slurm_job_id with
+          | Some id -> id
+          | None -> "-"
+        in
+        let logs_link = if j.status = "pending" || j.status = "submitted" then
+          span [txt "-"]
+        else
+          a ~a:[a_href (Printf.sprintf "/job/%d/logs" j.id)] [txt "logs"]
+        in
+        let retry_button =
+          form ~a:[a_method `Post; a_action (Printf.sprintf "/job/%d/retry" j.id);
+                   a_style "display: inline;"] [
+            button ~a:[a_button_type `Submit; a_class ["retry-btn"]] [txt "retry"]
+          ]
+        in
+        li ~a:[a_class ["job-item"]] [
+          div ~a:[a_class ["job-variant"]] [txt j.variant];
+          div ~a:[a_class ["job-status"]] [
+            span ~a:[a_class [status_class j.status]] [txt status_text]
+          ];
+          div ~a:[a_class ["job-slurm-id"]] [txt slurm_id];
+          div ~a:[a_class ["job-exit-code"]] [
+            txt (match j.exit_code with Some c -> string_of_int c | None -> "-")
+          ];
+          div ~a:[a_class ["job-actions"]] [
+            logs_link;
+            retry_button;
+          ];
+        ]
+      in
+
+      let package_group (package, package_jobs) =
+        Html.(
+          div ~a:[a_class ["package-group"]] [
+            div ~a:[a_class ["package-header"]] [txt package];
+            ul ~a:[a_class ["job-list"]] (List.map job_item package_jobs);
+          ]
+        )
+      in
+
+      let content = Html.[
+        h1 [txt (Printf.sprintf "PR #%d" pr_number)];
+        div ~a:[a_class ["summary"]] [
+          p [txt (Printf.sprintf "Commit: %s" pr.commit_hash)];
+          p [txt (Printf.sprintf "Status: %s" pr.status)];
+          p [txt (Printf.sprintf "Progress: %d / %d jobs completed" pr.completed_jobs pr.total_jobs)];
+          p [txt (Printf.sprintf "Failed: %d" pr.failed_jobs)];
+        ];
+        h2 [txt "Build Jobs"];
+        div ~a:[a_class ["tree-view"]] (List.map package_group jobs_by_package);
+      ] in
+
+      Lwt.return (page ~title:(Printf.sprintf "PR #%d" pr_number) content)
+
+(* PR list page *)
+let prs_page db =
+  let* prs = Db.get_recent_prs db ~limit:50 in
+
+  let pr_row pr =
+    let open Html in
+    let status_text = match pr.Db.status with
+      | "pending" -> "Pending"
+      | "running" -> "Running"
+      | "completed" -> "Completed"
+      | "failed" -> "Failed"
+      | _ -> pr.status
+    in
+    tr [
+      td [a ~a:[a_href (Printf.sprintf "/pr/%d" pr.pr_number); a_class ["pr-link"]]
+            [txt (Printf.sprintf "#%d" pr.pr_number)]];
+      td [txt pr.commit_hash];
+      td ~a:[a_class [status_class pr.status]] [txt status_text];
+      td [txt (Printf.sprintf "%d" pr.total_jobs)];
+      td [txt (Printf.sprintf "%d" pr.completed_jobs)];
+      td [txt (Printf.sprintf "%d" pr.failed_jobs)];
+    ] in
+
+  let content = Html.[
+    h1 [txt "All Pull Requests"];
+    tablex ~thead:(thead [
+        tr [
+          th [txt "PR"];
+          th [txt "Commit"];
+          th [txt "Status"];
+          th [txt "Total Jobs"];
+          th [txt "Completed"];
+          th [txt "Failed"];
+        ]
+      ]) [
+      tbody (List.map pr_row prs);
+    ];
+  ] in
+
+  Lwt.return (page ~title:"All PRs" content)
+
+(* HTTP request handler *)
+let handle_request db _conn req _body =
+  let uri = Cohttp.Request.uri req in
+  let path = Uri.path uri in
+  let meth = Cohttp.Request.meth req in
+
+  Log.info (fun f -> f "%s %s" (Cohttp.Code.string_of_method meth) path);
+
+  match meth, String.split_on_char '/' path with
+  (* GET routes *)
+  | `GET, path_parts -> begin match path_parts with
+  | "" :: [] | "" :: "" :: [] ->
+      let* html = home_page db in
+      let body = Format.asprintf "%a" (Html.pp ()) html in
+      Cohttp_lwt_unix.Server.respond_string ~status:`OK
+        ~headers:(Cohttp.Header.init_with "content-type" "text/html") ~body ()
+
+  | "" :: "prs" :: [] ->
+      let* html = prs_page db in
+      let body = Format.asprintf "%a" (Html.pp ()) html in
+      Cohttp_lwt_unix.Server.respond_string ~status:`OK
+        ~headers:(Cohttp.Header.init_with "content-type" "text/html") ~body ()
+
+  | "" :: "pr" :: pr_str :: [] ->
+      begin try
+        let pr_number = int_of_string pr_str in
+        let* html = pr_page db pr_number in
+        let body = Format.asprintf "%a" (Html.pp ()) html in
+        Cohttp_lwt_unix.Server.respond_string ~status:`OK
+          ~headers:(Cohttp.Header.init_with "content-type" "text/html") ~body ()
+      with _ ->
+        Cohttp_lwt_unix.Server.respond_string ~status:`Not_found ~body:"Invalid PR number" ()
+      end
+
+  | "" :: "job" :: job_id_str :: "logs" :: [] ->
+      begin try
+        let job_id = int_of_string job_id_str in
+        let* job_opt = Db.get_job db job_id in
+        match job_opt with
+        | None ->
+            let content = Html.[
+              h1 [txt "Job Log"];
+              p [txt "Job not found"];
+            ] in
+            let* html = Lwt.return (page ~title:"Job Log" content) in
+            let body = Format.asprintf "%a" (Html.pp ()) html in
+            Cohttp_lwt_unix.Server.respond_string ~status:`Not_found
+              ~headers:(Cohttp.Header.init_with "content-type" "text/html") ~body ()
+        | Some job ->
+            match job.output_file with
+            | None ->
+                let content = Html.[
+                  h1 [txt (Printf.sprintf "Job #%d Log" job_id)];
+                  p [txt "No log file available"];
+                ] in
+                let* html = Lwt.return (page ~title:"Job Log" content) in
+                let body = Format.asprintf "%a" (Html.pp ()) html in
+                Cohttp_lwt_unix.Server.respond_string ~status:`Not_found
+                  ~headers:(Cohttp.Header.init_with "content-type" "text/html") ~body ()
+            | Some file_path ->
+                Lwt.catch
+                  (fun () ->
+                    let* log_content = Lwt_io.with_file ~mode:Lwt_io.input file_path
+                      (fun ic -> Lwt_io.read ic) in
+
+                    let retry_button = Html.(
+                      form ~a:[a_method `Post; a_action (Printf.sprintf "/job/%d/retry" job_id)] [
+                        button ~a:[a_button_type `Submit; a_class ["retry-btn"]] [txt "Retry Job"]
+                      ]
+                    ) in
+
+                    let content = Html.[
+                      h1 [txt (Printf.sprintf "Job #%d: %s (%s)" job_id job.package job.variant)];
+                      retry_button;
+                      h2 [txt "Build Log"];
+                      pre [txt log_content];
+                    ] in
+                    let* html = Lwt.return (page ~title:(Printf.sprintf "Job #%d Log" job_id) content) in
+                    let body = Format.asprintf "%a" (Html.pp ()) html in
+                    Cohttp_lwt_unix.Server.respond_string ~status:`OK
+                      ~headers:(Cohttp.Header.init_with "content-type" "text/html") ~body ()
+                  )
+                  (fun _exn ->
+                    let content = Html.[
+                      h1 [txt (Printf.sprintf "Job #%d Log" job_id)];
+                      p [txt (Printf.sprintf "Could not read log file: %s" file_path)];
+                    ] in
+                    let* html = Lwt.return (page ~title:"Job Log" content) in
+                    let body = Format.asprintf "%a" (Html.pp ()) html in
+                    Cohttp_lwt_unix.Server.respond_string ~status:`Not_found
+                      ~headers:(Cohttp.Header.init_with "content-type" "text/html") ~body ()
+                  )
+      with _ ->
+        let content = Html.[
+          h1 [txt "Job Log"];
+          p [txt "Invalid job ID"];
+        ] in
+        let* html = Lwt.return (page ~title:"Job Log" content) in
+        let body = Format.asprintf "%a" (Html.pp ()) html in
+        Cohttp_lwt_unix.Server.respond_string ~status:`Not_found
+          ~headers:(Cohttp.Header.init_with "content-type" "text/html") ~body ()
+      end
+
+  | _ ->
+      Cohttp_lwt_unix.Server.respond_string ~status:`Not_found ~body:"Not found" ()
+  end
+
+  (* POST routes *)
+  | `POST, ("" :: "job" :: job_id_str :: "retry" :: []) ->
+      begin try
+        let job_id = int_of_string job_id_str in
+        let* job_opt = Db.get_job db job_id in
+        match job_opt with
+        | None ->
+            Cohttp_lwt_unix.Server.respond_string ~status:`Not_found ~body:"Job not found" ()
+        | Some job ->
+            (* Call the service API to retry the job *)
+            let uri = Uri.of_string (Printf.sprintf "http://localhost:8091/retry/%d" job_id) in
+            let* resp, body = Cohttp_lwt_unix.Client.post uri in
+            let status = Cohttp.Response.status resp in
+
+            (* Always consume the body to avoid leaking streams *)
+            let* body_str = Cohttp_lwt.Body.to_string body in
+
+            if Cohttp.Code.is_success (Cohttp.Code.code_of_status status) then begin
+              Log.info (fun f -> f "Successfully requested retry for job %d" job_id);
+              (* Redirect back to PR page *)
+              let headers = Cohttp.Header.init_with "location" (Printf.sprintf "/pr/%d" job.pr_number) in
+              Cohttp_lwt_unix.Server.respond ~status:`Found ~headers ~body:Cohttp_lwt.Body.empty ()
+            end else begin
+              Log.err (fun f -> f "Failed to retry job %d: %s" job_id body_str);
+              Cohttp_lwt_unix.Server.respond_string ~status:`Internal_server_error
+                ~body:(Printf.sprintf "Failed to retry job: %s" body_str) ()
+            end
+      with _ ->
+        Cohttp_lwt_unix.Server.respond_string ~status:`Not_found ~body:"Invalid job ID" ()
+      end
+
+  | _ ->
+      Cohttp_lwt_unix.Server.respond_string ~status:`Method_not_allowed ~body:"Method not allowed" ()
+
+(* Main entry point *)
+let main config =
+  Log.info (fun f -> f "Starting OPAM CI Web Interface");
+  Log.info (fun f -> f "Port: %d" config.port);
+  Log.info (fun f -> f "Database: %s" config.db_path);
+
+  (* Initialize database *)
+  let* db = Db.init config.db_path in
+
+  (* Start HTTP server *)
+  Log.info (fun f -> f "Starting HTTP server on port %d" config.port);
+  let callback = handle_request db in
+  let server =
+    Cohttp_lwt_unix.Server.create
+      ~mode:(`TCP (`Port config.port))
+      (Cohttp_lwt_unix.Server.make ~callback ())
+  in
+
+  server
+
+(* Command-line arguments *)
+let () =
+  Logs.set_reporter (Logs_fmt.reporter ());
+  Logs.set_level (Some Logs.Info);
+
+  let config = ref default_config in
+
+  let spec = [
+    ("--port", Arg.Int (fun p -> config := { !config with port = p }),
+     "PORT HTTP server port (default: 8092)");
+    ("--db", Arg.String (fun db -> config := { !config with db_path = db }),
+     "PATH Database file path");
+    ("--verbose", Arg.Unit (fun () -> Logs.set_level (Some Logs.Debug)),
+     " Enable debug logging");
+  ] in
+
+  Arg.parse spec (fun _ -> ()) "OPAM Repository CI - Web Interface";
+
+  Lwt_main.run (main !config)

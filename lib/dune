@@ -1,24 +1,20 @@
 (library
  (name opam_repo_ci)
  (package opam-repo-ci-api)
+ (modules coordinator db github_status monitor slurm)
  (preprocess
   (pps ppx_deriving.std ppx_deriving_yojson))
  (libraries
   logs
-  sexplib
-  current
-  current_docker
-  current_github
-  current.term
-  current.cache
-  dockerfile
   ppx_deriving_yojson.runtime
   ocaml-version
-  dockerfile-opam
-  current_ocluster
-  capnp-rpc-lwt
-  obuilder-spec
-  opam-format
-  opam-state
-  opam-repo-ci-api
-  opam_ci_check))
+  fpath
+  opam-client
+  lwt
+  lwt.unix
+  sqlite3
+  uri
+  yojson
+  cohttp
+  cohttp-lwt
+  cohttp-lwt-unix))

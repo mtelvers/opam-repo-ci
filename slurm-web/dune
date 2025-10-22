@@ -1,0 +1,14 @@
+(executable
+ (name main)
+ (public_name opam-ci-slurm-web)
+ (package opam-repo-ci-web)
+ (libraries
+  opam_repo_ci
+  lwt
+  lwt.unix
+  cohttp-lwt-unix
+  tyxml
+  logs
+  logs.fmt
+  fmt.tty
+  fmt.cli))
