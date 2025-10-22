@@ -6,7 +6,7 @@ type job_id = string
 type job_status =
   | Pending
   | Running
-  | Completed of { exit_code : int }
+  | Completed
   | Failed of { exit_code : int }
   | Cancelled
   | Unknown

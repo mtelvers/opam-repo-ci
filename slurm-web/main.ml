@@ -89,8 +89,8 @@ let page ~title:page_title content =
             border-radius: 3px;
             font-size: 12px;
             font-weight: 500;
-            background: #dbab0a;
-            color: white;
+            background: #d1d5da;
+            color: #24292f;
           }
           .status-running {
             display: inline-block;
@@ -101,7 +101,7 @@ let page ~title:page_title content =
             background: #0969da;
             color: white;
           }
-          .status-completed {
+          .status-success {
             display: inline-block;
             padding: 2px 6px;
             border-radius: 3px;
@@ -110,13 +110,40 @@ let page ~title:page_title content =
             background: #1a7f37;
             color: white;
           }
-          .status-failed {
+          .status-no-solution {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 500;
+            background: #fb8500;
+            color: white;
+          }
+          .status-dep-failed {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 500;
+            background: #9a6700;
+            color: white;
+          }
+          .status-failure {
             display: inline-block;
             padding: 2px 6px;
             border-radius: 3px;
             font-size: 12px;
             font-weight: 500;
             background: #cf222e;
+            color: white;
+          }
+          .status-internal-failure {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 500;
+            background: #82071e;
             color: white;
           }
           .status-cancelled {
@@ -277,8 +304,32 @@ let page ~title:page_title content =
       div content
     ])
 
-let status_class status =
-  "status-" ^ status
+(* Determine CSS class based on status and exit code *)
+let status_class status exit_code =
+  match status, exit_code with
+  | "completed", Some 0 -> "status-success"
+  | "completed", Some 1 -> "status-no-solution"
+  | "completed", Some 2 -> "status-dep-failed"
+  | "completed", Some 3 -> "status-failure"
+  | "failed", _ -> "status-internal-failure"
+  | "cancelled", _ -> "status-cancelled"
+  | "running", _ -> "status-running"
+  | "pending", _ | "submitted", _ -> "status-pending"
+  | _ -> "status-pending"
+
+(* Determine display text based on status and exit code *)
+let status_text status exit_code =
+  match status, exit_code with
+  | "completed", Some 0 -> "Success"
+  | "completed", Some 1 -> "No solution"
+  | "completed", Some 2 -> "Dependency failed"
+  | "completed", Some 3 -> "Failure"
+  | "failed", _ -> "Internal failure"
+  | "cancelled", _ -> "Cancelled"
+  | "running", _ -> "Running"
+  | "pending", _ -> "Pending"
+  | "submitted", _ -> "Submitted"
+  | _ -> status
 
 (* Home page *)
 let home_page db =
@@ -286,22 +337,15 @@ let home_page db =
   let* prs = Db.get_recent_prs db ~limit:10 in
   Log.info (fun f -> f "Found %d PRs" (List.length prs));
 
-  let pr_row pr =
+  let pr_row (pr : Db.pr) =
     let open Html in
-    let status_text = match pr.Db.status with
-      | "pending" -> "Pending"
-      | "running" -> "Running"
-      | "completed" -> "Completed"
-      | "failed" -> "Failed"
-      | _ -> pr.status
-    in
     tr [
-      td [a ~a:[a_href (Printf.sprintf "/pr/%d" pr.pr_number); a_class ["pr-link"]]
-            [txt (Printf.sprintf "#%d" pr.pr_number)]];
-      td [txt (String.sub pr.commit_hash 0 (min 8 (String.length pr.commit_hash)))];
-      td ~a:[a_class [status_class pr.status]] [txt status_text];
-      td [txt (Printf.sprintf "%d / %d" pr.completed_jobs pr.total_jobs)];
-      td [txt (if pr.failed_jobs > 0 then Printf.sprintf "%d" pr.failed_jobs else "-")];
+      td [a ~a:[a_href (Printf.sprintf "/pr/%d" pr.Db.pr_number); a_class ["pr-link"]]
+            [txt (Printf.sprintf "#%d" pr.Db.pr_number)]];
+      td [txt (String.sub pr.Db.commit_hash 0 (min 8 (String.length pr.Db.commit_hash)))];
+      td ~a:[a_class [status_class pr.Db.status None]] [txt (status_text pr.Db.status None)];
+      td [txt (Printf.sprintf "%d / %d" pr.Db.completed_jobs pr.Db.total_jobs)];
+      td [txt (if pr.Db.failed_jobs > 0 then Printf.sprintf "%d" pr.Db.failed_jobs else "-")];
     ] in
 
   let content = Html.[
@@ -353,15 +397,6 @@ let pr_page db pr_number =
 
       let job_item (j : Db.job) =
         let open Html in
-        let status_text = match j.status with
-          | "pending" -> "Pending"
-          | "submitted" -> "Submitted"
-          | "running" -> "Running"
-          | "completed" -> "Completed"
-          | "failed" -> "Failed"
-          | "cancelled" -> "Cancelled"
-          | _ -> j.status
-        in
         let slurm_id = match j.slurm_job_id with
           | Some id -> id
           | None -> "-"
@@ -380,7 +415,8 @@ let pr_page db pr_number =
         li ~a:[a_class ["job-item"]] [
           div ~a:[a_class ["job-variant"]] [txt j.variant];
           div ~a:[a_class ["job-status"]] [
-            span ~a:[a_class [status_class j.status]] [txt status_text]
+            span ~a:[a_class [status_class j.status j.exit_code]]
+              [txt (status_text j.status j.exit_code)]
           ];
           div ~a:[a_class ["job-slurm-id"]] [txt slurm_id];
           div ~a:[a_class ["job-exit-code"]] [
@@ -420,23 +456,16 @@ let pr_page db pr_number =
 let prs_page db =
   let* prs = Db.get_recent_prs db ~limit:50 in
 
-  let pr_row pr =
+  let pr_row (pr : Db.pr) =
     let open Html in
-    let status_text = match pr.Db.status with
-      | "pending" -> "Pending"
-      | "running" -> "Running"
-      | "completed" -> "Completed"
-      | "failed" -> "Failed"
-      | _ -> pr.status
-    in
     tr [
-      td [a ~a:[a_href (Printf.sprintf "/pr/%d" pr.pr_number); a_class ["pr-link"]]
-            [txt (Printf.sprintf "#%d" pr.pr_number)]];
-      td [txt pr.commit_hash];
-      td ~a:[a_class [status_class pr.status]] [txt status_text];
-      td [txt (Printf.sprintf "%d" pr.total_jobs)];
-      td [txt (Printf.sprintf "%d" pr.completed_jobs)];
-      td [txt (Printf.sprintf "%d" pr.failed_jobs)];
+      td [a ~a:[a_href (Printf.sprintf "/pr/%d" pr.Db.pr_number); a_class ["pr-link"]]
+            [txt (Printf.sprintf "#%d" pr.Db.pr_number)]];
+      td [txt pr.Db.commit_hash];
+      td ~a:[a_class [status_class pr.Db.status None]] [txt (status_text pr.Db.status None)];
+      td [txt (Printf.sprintf "%d" pr.Db.total_jobs)];
+      td [txt (Printf.sprintf "%d" pr.Db.completed_jobs)];
+      td [txt (Printf.sprintf "%d" pr.Db.failed_jobs)];
     ] in
 
   let content = Html.[

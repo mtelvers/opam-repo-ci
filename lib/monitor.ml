@@ -12,14 +12,14 @@ module Log = (val Logs.src_log log_src : Logs.LOG)
 let slurm_status_to_string = function
   | Slurm.Pending -> "pending"
   | Slurm.Running -> "running"
-  | Slurm.Completed _ -> "completed"
-  | Slurm.Failed _ -> "failed"
+  | Slurm.Completed -> "completed"
+  | Slurm.Failed _ -> "completed"  (* day10 failures are still "completed" with exit code *)
   | Slurm.Cancelled -> "cancelled"
   | Slurm.Unknown -> "unknown"
 
 (** Get exit code from Slurm status *)
 let slurm_status_exit_code = function
-  | Slurm.Completed { exit_code } -> Some exit_code
+  | Slurm.Completed -> Some 0
   | Slurm.Failed { exit_code } -> Some exit_code
   | _ -> None
 
@@ -46,7 +46,7 @@ let check_job db job =
 
             (* Update PR stats if job is terminal *)
             let is_terminal = match slurm_status with
-              | Slurm.Completed _ | Slurm.Failed _ | Slurm.Cancelled -> true
+              | Slurm.Completed | Slurm.Failed _ | Slurm.Cancelled -> true
               | _ -> false
             in
             let* () =

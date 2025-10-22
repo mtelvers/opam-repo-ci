@@ -5,7 +5,7 @@ type job_id = string
 type job_status =
   | Pending
   | Running
-  | Completed of { exit_code : int }
+  | Completed
   | Failed of { exit_code : int }
   | Cancelled
   | Unknown
@@ -55,6 +55,12 @@ let run_command ?(timeout=30.0) cmd args =
       Lwt.return (Error (`Msg (Printexc.to_string exn)))
     )
 
+(** Map architecture names to Slurm constraint names *)
+let arch_to_constraint = function
+  | "arm64" -> "aarch64"
+  | "arm32v7" -> "armv7l"
+  | arch -> arch  (* x86_64, ppc64le, s390x, riscv64 remain unchanged *)
+
 (** Generate a unique job name *)
 let job_name spec =
   Printf.sprintf "pr%d-%s-%s-%s"
@@ -95,8 +101,8 @@ let submit_build spec =
   let sbatch_args = [
     "--job-name=" ^ name;
     "--output=" ^ log_file;
-    "--partition=eeg";
-    "--constraint=" ^ spec.arch;
+    "--partition=compute";
+    "--constraint=" ^ (arch_to_constraint spec.arch);
     "--wrap=" ^ day10_cmd;
   ] in
 
@@ -118,11 +124,10 @@ let parse_job_status state exit_code =
   match String.uppercase_ascii (String.trim state) with
   | "PENDING" | "PD" -> Pending
   | "RUNNING" | "R" -> Running
-  | "COMPLETED" | "CD" ->
-      Completed { exit_code = (try int_of_string exit_code with _ -> 0) }
-  | "FAILED" | "F" | "TIMEOUT" | "TO" | "OUT_OF_MEMORY" | "OOM" ->
+  | "COMPLETED" | "CD" -> Completed
+  | "FAILED" | "F" | "TIMEOUT" | "TO" | "OUT_OF_MEMORY" | "OOM" | "BOOT_FAIL" | "BF" | "NODE_FAIL" | "NF" ->
       Failed { exit_code = (try int_of_string exit_code with _ -> 1) }
-  | "CANCELLED" | "CA" | "CANCELLED+" | "PREEMPTED" -> Cancelled
+  | "CANCELLED" | "CA" | "CANCELLED+" | "PREEMPTED" | "PR" -> Cancelled
   | _ -> Unknown
 
 (** Get job status using sacct *)
