@@ -357,7 +357,7 @@ let init_opam_repo config =
       match status with
       | Unix.WEXITED 0 ->
           Log.info (fun f -> f "Cloning OPAM repository to %s..." config.opam_repo_path);
-          let command = ("git", [| "git"; "clone"; "--depth"; "1";
+          let command = ("git", [| "git"; "clone";
                                   config.opam_repo_url; config.opam_repo_path |]) in
           let* status = Lwt_process.exec command in
           begin match status with
@@ -374,7 +374,7 @@ let init_opam_repo config =
     end
   end else begin
     Log.info (fun f -> f "Cloning OPAM repository to %s..." config.opam_repo_path);
-    let command = ("git", [| "git"; "clone"; "--depth"; "1";
+    let command = ("git", [| "git"; "clone";
                             config.opam_repo_url; config.opam_repo_path |]) in
     let* status = Lwt_process.exec command in
     match status with
