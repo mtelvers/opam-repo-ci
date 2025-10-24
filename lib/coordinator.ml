@@ -212,6 +212,8 @@ let submit_jobs config ~pr_number ~commit_hash ~worktree_path jobs =
             submit_all rest
         | Error (`Msg msg) ->
             Log.err (fun f -> f "Failed to submit job %d: %s" job_id msg);
+            (* Mark job as failed (infrastructure/submission error) *)
+            let* () = Db.update_job_status config.db ~job_id ~status:"failed" ~exit_code:None in
             (* Continue with other jobs even if one fails *)
             submit_all rest
   in
