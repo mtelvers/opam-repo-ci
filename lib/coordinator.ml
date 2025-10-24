@@ -95,13 +95,14 @@ let create_pr_worktree config pr_number commit_hash =
           Log.info (fun f -> f "Worktree created and PR merged successfully");
           Lwt.return (Ok worktree_path)
 
-(** Get changed packages between master and commit *)
-let get_changed_packages config commit_hash =
-  Log.info (fun f -> f "Finding changed packages for commit %s" commit_hash);
+(** Get changed packages in the worktree (which has PR merged into master) *)
+let get_changed_packages worktree_path =
+  Log.info (fun f -> f "Finding changed packages in worktree %s" worktree_path);
 
-  (* Get diff between master and commit *)
-  let* result = git_cmd config.opam_repo_path
-    ["diff"; "--name-only"; "origin/master"; commit_hash; "--"; "packages/"]
+  (* Run diff from within the worktree (which has master merged with PR commit) *)
+  (* This shows only the changes from the PR, matching the original behavior *)
+  let* result = git_cmd worktree_path
+    ["diff"; "--name-only"; "origin/master"; "--"; "packages/"]
   in
 
   match result with
@@ -235,8 +236,8 @@ let process_pr config ~pr_number ~commit_hash =
           match worktree_result with
           | Error e -> Lwt.return (Error e)
           | Ok worktree_path ->
-              (* Get changed packages *)
-              let* result = get_changed_packages config commit_hash in
+              (* Get changed packages by diffing from within the worktree *)
+              let* result = get_changed_packages worktree_path in
               match result with
               | Error e -> Lwt.return (Error e)
               | Ok [] ->
