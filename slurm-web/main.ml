@@ -457,6 +457,9 @@ let jobs_page db =
   let* jobs = Db.get_running_jobs db in
   Log.info (fun f -> f "Found %d running jobs" (List.length jobs));
 
+  (* Count jobs by status *)
+  let running_count = List.filter (fun (j : Db.job) -> j.status = "running") jobs |> List.length in
+
   let job_row (job : Db.job) =
     let open Html in
     let slurm_id = match job.slurm_job_id with
@@ -479,7 +482,11 @@ let jobs_page db =
     div ~a:[a_class ["summary"]] [
       div ~a:[a_class ["summary-item"]] [
         div ~a:[a_class ["summary-number"]] [txt (string_of_int (List.length jobs))];
-        div ~a:[a_class ["summary-label"]] [txt "Jobs"];
+        div ~a:[a_class ["summary-label"]] [txt "Total Jobs"];
+      ];
+      div ~a:[a_class ["summary-item"]] [
+        div ~a:[a_class ["summary-number"]] [txt (string_of_int running_count)];
+        div ~a:[a_class ["summary-label"]] [txt "Running"];
       ];
     ];
     tablex ~thead:(thead [
