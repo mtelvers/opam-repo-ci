@@ -136,12 +136,13 @@ let generate_build_matrix ~packages =
     "riscv64";
   ] in
 
-  let ocaml_versions = [
-    "ocaml.4.14.2";
-    "ocaml.5.2.1";
-    "ocaml.5.3.0";
-    "ocaml.5.4.0";
-  ] in
+  (* Get OCaml versions from ocaml-version library *)
+  let all_supported = Ocaml_version.Releases.recent @ Ocaml_version.Releases.unreleased_betas in
+  let ocaml_versions =
+    List.map (fun v ->
+      "ocaml." ^ Ocaml_version.to_string v
+    ) all_supported
+  in
 
   (* Generate all combinations *)
   let jobs = ref [] in
