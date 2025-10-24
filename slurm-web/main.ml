@@ -298,8 +298,8 @@ let page ~title:page_title content =
     ])
     (body [
       nav [
-        a ~a:[a_href "/"] [txt "Home"];
-        a ~a:[a_href "/prs"] [txt "Recent PRs"];
+        a ~a:[a_href "/"] [txt "PRs"];
+        a ~a:[a_href "/jobs"] [txt "Jobs"];
       ];
       div content
     ])
@@ -331,10 +331,10 @@ let status_text status exit_code =
   | "submitted", _ -> "Submitted"
   | _ -> status
 
-(* Home page *)
-let home_page db =
-  Log.info (fun f -> f "Fetching recent PRs for home page");
-  let* prs = Db.get_recent_prs db ~limit:10 in
+(* PRs page - shows all PRs *)
+let prs_page db =
+  Log.info (fun f -> f "Fetching all PRs");
+  let* prs = Db.get_recent_prs db ~limit:1000 in
   Log.info (fun f -> f "Found %d PRs" (List.length prs));
 
   let pr_row (pr : Db.pr) =
@@ -349,20 +349,19 @@ let home_page db =
     ] in
 
   let content = Html.[
-    h1 [txt "OPAM CI - Slurm Edition"];
+    h1 [txt "Pull Requests"];
     div ~a:[a_class ["summary"]] [
       div ~a:[a_class ["summary-item"]] [
         div ~a:[a_class ["summary-number"]] [txt (string_of_int (List.length prs))];
-        div ~a:[a_class ["summary-label"]] [txt "Recent PRs"];
+        div ~a:[a_class ["summary-label"]] [txt "Total PRs"];
       ];
     ];
-    h2 [txt "Recent Pull Requests"];
     tablex ~thead:(thead [
         tr [
           th [txt "PR"];
           th [txt "Commit"];
           th [txt "Status"];
-          th [txt "Completed"];
+          th [txt "Progress"];
           th [txt "Failed"];
         ]
       ]) [
@@ -370,7 +369,7 @@ let home_page db =
     ];
   ] in
 
-  Lwt.return (page ~title:"OPAM CI" content)
+  Lwt.return (page ~title:"Pull Requests" content)
 
 (* PR detail page *)
 let pr_page db pr_number =
@@ -452,39 +451,52 @@ let pr_page db pr_number =
 
       Lwt.return (page ~title:(Printf.sprintf "PR #%d" pr_number) content)
 
-(* PR list page *)
-let prs_page db =
-  let* prs = Db.get_recent_prs db ~limit:50 in
+(* Jobs page - shows all running jobs *)
+let jobs_page db =
+  Log.info (fun f -> f "Fetching running jobs");
+  let* jobs = Db.get_running_jobs db in
+  Log.info (fun f -> f "Found %d running jobs" (List.length jobs));
 
-  let pr_row (pr : Db.pr) =
+  let job_row (job : Db.job) =
     let open Html in
+    let slurm_id = match job.slurm_job_id with
+      | Some id -> id
+      | None -> "-"
+    in
     tr [
-      td [a ~a:[a_href (Printf.sprintf "/pr/%d" pr.Db.pr_number); a_class ["pr-link"]]
-            [txt (Printf.sprintf "#%d" pr.Db.pr_number)]];
-      td [txt pr.Db.commit_hash];
-      td ~a:[a_class [status_class pr.Db.status None]] [txt (status_text pr.Db.status None)];
-      td [txt (Printf.sprintf "%d" pr.Db.total_jobs)];
-      td [txt (Printf.sprintf "%d" pr.Db.completed_jobs)];
-      td [txt (Printf.sprintf "%d" pr.Db.failed_jobs)];
+      td [a ~a:[a_href (Printf.sprintf "/pr/%d" job.pr_number); a_class ["pr-link"]]
+            [txt (Printf.sprintf "#%d" job.pr_number)]];
+      td [txt job.package];
+      td [txt job.variant];
+      td ~a:[a_class [status_class job.status job.exit_code]]
+        [txt (status_text job.status job.exit_code)];
+      td [txt slurm_id];
+      td [a ~a:[a_href (Printf.sprintf "/job/%d/logs" job.id)] [txt "logs"]];
     ] in
 
   let content = Html.[
-    h1 [txt "All Pull Requests"];
+    h1 [txt "Running Jobs"];
+    div ~a:[a_class ["summary"]] [
+      div ~a:[a_class ["summary-item"]] [
+        div ~a:[a_class ["summary-number"]] [txt (string_of_int (List.length jobs))];
+        div ~a:[a_class ["summary-label"]] [txt "Jobs"];
+      ];
+    ];
     tablex ~thead:(thead [
         tr [
           th [txt "PR"];
-          th [txt "Commit"];
+          th [txt "Package"];
+          th [txt "Variant"];
           th [txt "Status"];
-          th [txt "Total Jobs"];
-          th [txt "Completed"];
-          th [txt "Failed"];
+          th [txt "Slurm ID"];
+          th [txt "Logs"];
         ]
       ]) [
-      tbody (List.map pr_row prs);
+      tbody (List.map job_row jobs);
     ];
   ] in
 
-  Lwt.return (page ~title:"All PRs" content)
+  Lwt.return (page ~title:"Running Jobs" content)
 
 (* HTTP request handler *)
 let handle_request db _conn req _body =
@@ -498,13 +510,13 @@ let handle_request db _conn req _body =
   (* GET routes *)
   | `GET, path_parts -> begin match path_parts with
   | "" :: [] | "" :: "" :: [] ->
-      let* html = home_page db in
+      let* html = prs_page db in
       let body = Format.asprintf "%a" (Html.pp ()) html in
       Cohttp_lwt_unix.Server.respond_string ~status:`OK
         ~headers:(Cohttp.Header.init_with "content-type" "text/html") ~body ()
 
-  | "" :: "prs" :: [] ->
-      let* html = prs_page db in
+  | "" :: "jobs" :: [] ->
+      let* html = jobs_page db in
       let body = Format.asprintf "%a" (Html.pp ()) html in
       Cohttp_lwt_unix.Server.respond_string ~status:`OK
         ~headers:(Cohttp.Header.init_with "content-type" "text/html") ~body ()

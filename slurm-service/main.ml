@@ -159,14 +159,6 @@ let poll_github_prs config db =
 
           Log.info (fun f -> f "Found %d open PRs on GitHub" (List.length prs));
 
-          (* TEMPORARY: Only process first PR to avoid traffic *)
-          let prs_to_process = match prs with
-            | first :: _ ->
-                Log.info (fun f -> f "Processing only first PR (temporary limit)");
-                [first]
-            | [] -> []
-          in
-
           (* Process each PR *)
           Lwt_list.iter_s (fun pr_json ->
             try
@@ -210,7 +202,7 @@ let poll_github_prs config db =
               Log.warn (fun f -> f "Failed to parse PR from GitHub response: %s"
                 (Printexc.to_string exn));
               Lwt.return_unit
-          ) prs_to_process
+          ) prs
         with exn ->
           Log.err (fun f -> f "Failed to parse GitHub API response: %s"
             (Printexc.to_string exn));

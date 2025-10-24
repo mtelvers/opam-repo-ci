@@ -398,7 +398,7 @@ let get_recent_prs t ~limit =
   Lwt_mutex.with_lock t.mutex (fun () ->
     with_stmt t.db
       "SELECT pr_number, commit_hash, status, total_jobs, completed_jobs, failed_jobs, \
-       created_at, updated_at FROM prs ORDER BY updated_at DESC LIMIT ?"
+       created_at, updated_at FROM prs ORDER BY pr_number ASC LIMIT ?"
       (fun stmt ->
         let _ = Sqlite3.bind stmt 1 (Sqlite3.Data.INT (Int64.of_int limit)) in
         let rec collect acc =
