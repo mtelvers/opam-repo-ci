@@ -103,6 +103,8 @@ let submit_build spec =
     "--output=" ^ log_file;
     "--partition=compute";
     "--constraint=" ^ (arch_to_constraint spec.arch);
+    "--mem=30G";
+    "--cpus-per-task=4";
     "--wrap=" ^ day10_cmd;
   ] in
 
