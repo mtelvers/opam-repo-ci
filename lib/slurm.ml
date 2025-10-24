@@ -123,12 +123,17 @@ let submit_build spec =
 
 (** Parse sacct output to get job status *)
 let parse_job_status state exit_code =
+  (* Exit code format from sacct is "exitcode:signal", e.g., "2:0" *)
+  let code = match String.split_on_char ':' exit_code with
+    | code_str :: _ -> (try int_of_string code_str with _ -> 1)
+    | [] -> 1
+  in
   match String.uppercase_ascii (String.trim state) with
   | "PENDING" | "PD" -> Pending
   | "RUNNING" | "R" -> Running
   | "COMPLETED" | "CD" -> Completed
   | "FAILED" | "F" | "TIMEOUT" | "TO" | "OUT_OF_MEMORY" | "OOM" | "BOOT_FAIL" | "BF" | "NODE_FAIL" | "NF" ->
-      Failed { exit_code = (try int_of_string exit_code with _ -> 1) }
+      Failed { exit_code = code }
   | "CANCELLED" | "CA" | "CANCELLED+" | "PREEMPTED" | "PR" -> Cancelled
   | _ -> Unknown
 
