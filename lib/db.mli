@@ -8,7 +8,8 @@ type job = {
   pr_number : int;
   commit_hash : string;
   package : string;
-  variant : string;  (* arch-ocaml_version *)
+  arch : string;
+  ocaml_version : string;
   slurm_job_id : string option;
   status : string;  (* pending, running, completed, failed, cancelled *)
   exit_code : int option;
@@ -42,7 +43,8 @@ val create_job :
   pr_number:int ->
   commit_hash:string ->
   package:string ->
-  variant:string ->
+  arch:string ->
+  ocaml_version:string ->
   log_file:string ->
   int Lwt.t
 (** Create a new job record. Returns job ID. *)

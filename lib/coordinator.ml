@@ -10,7 +10,6 @@ type config = {
 
 type build_job = {
   package : string;
-  variant : string;
   arch : string;
   ocaml_version : string;
 }
@@ -149,10 +148,8 @@ let generate_build_matrix ~packages =
   List.iter (fun package ->
     List.iter (fun arch ->
       List.iter (fun ocaml_version ->
-        let variant = Printf.sprintf "%s-%s" arch ocaml_version in
         jobs := {
           package;
-          variant;
           arch;
           ocaml_version;
         } :: !jobs
@@ -180,7 +177,7 @@ let submit_jobs config ~pr_number ~commit_hash ~worktree_path jobs =
     | job :: rest ->
         let log_file =
           Filename.concat config.work_dir
-            (Printf.sprintf "pr%d-%s-%s.log" pr_number job.package job.variant)
+            (Printf.sprintf "pr%d-%s-%s-%s.log" pr_number job.package job.arch job.ocaml_version)
         in
 
         (* Create job record *)
@@ -188,7 +185,8 @@ let submit_jobs config ~pr_number ~commit_hash ~worktree_path jobs =
           ~pr_number
           ~commit_hash
           ~package:job.package
-          ~variant:job.variant
+          ~arch:job.arch
+          ~ocaml_version:job.ocaml_version
           ~log_file
         in
 

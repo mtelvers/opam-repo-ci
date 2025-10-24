@@ -10,7 +10,6 @@ type config = {
 
 type build_job = {
   package : string;
-  variant : string;  (** Format: {arch}-{ocaml_version} *)
   arch : string;
   ocaml_version : string;
 }

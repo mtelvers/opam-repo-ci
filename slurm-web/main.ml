@@ -24,6 +24,7 @@ let page ~title:page_title content =
   let open Html in
   html
     (head (title (txt page_title)) [
+      meta ~a:[a_charset "UTF-8"] ();
       style ~a:[a_mime_type "text/css"] [
         txt {|
           body {
@@ -371,6 +372,20 @@ let prs_page db =
 
   Lwt.return (page ~title:"Pull Requests" content)
 
+(* Visual status indicator *)
+let status_icon status exit_code =
+  let open Html in
+  match status, exit_code with
+  | "completed", Some 0 -> span ~a:[a_style "color: #1a7f37;"] [txt "✓"]
+  | "completed", Some 1 -> span ~a:[a_style "color: #fb8500;"] [txt "○"]
+  | "completed", Some 2 -> span ~a:[a_style "color: #9a6700;"] [txt "◐"]
+  | "completed", Some 3 -> span ~a:[a_style "color: #cf222e;"] [txt "✗"]
+  | "failed", _ -> span ~a:[a_style "color: #82071e;"] [txt "!"]
+  | "cancelled", _ -> span ~a:[a_style "color: #656d76;"] [txt "−"]
+  | "running", _ -> span ~a:[a_style "color: #0969da;"] [txt "⏳"]
+  | "pending", _ | "submitted", _ -> span ~a:[a_style "color: #d1d5da;"] [txt "⏱"]
+  | _ -> span ~a:[a_style "color: #d1d5da;"] [txt "?"]
+
 (* PR detail page *)
 let pr_page db pr_number =
   let* pr_opt = Db.get_pr db pr_number in
@@ -384,55 +399,60 @@ let pr_page db pr_number =
   | Some pr ->
       let* jobs = Db.get_jobs_by_pr db pr_number in
 
-      (* Group jobs by package *)
-      let jobs_by_package =
+      (* Group jobs by ocaml_version -> package -> arch *)
+      let jobs_by_compiler =
         List.fold_left (fun acc (job : Db.job) ->
-          let existing = try List.assoc job.package acc with Not_found -> [] in
-          (job.package, job :: existing) :: List.remove_assoc job.package acc
+          let existing = try List.assoc job.ocaml_version acc with Not_found -> [] in
+          (job.ocaml_version, job :: existing) :: List.remove_assoc job.ocaml_version acc
         ) [] jobs
-        |> List.map (fun (pkg, jobs) -> (pkg, List.rev jobs))
+        |> List.map (fun (ocaml, jobs) -> (ocaml, List.rev jobs))
         |> List.sort (fun (a, _) (b, _) -> String.compare a b)
       in
 
-      let job_item (j : Db.job) =
-        let open Html in
-        let slurm_id = match j.slurm_job_id with
-          | Some id -> id
-          | None -> "-"
-        in
-        let logs_link = if j.status = "pending" || j.status = "submitted" then
-          span [txt "-"]
-        else
-          a ~a:[a_href (Printf.sprintf "/job/%d/logs" j.id)] [txt "logs"]
-        in
-        let retry_button =
-          form ~a:[a_method `Post; a_action (Printf.sprintf "/job/%d/retry" j.id);
-                   a_style "display: inline;"] [
-            button ~a:[a_button_type `Submit; a_class ["retry-btn"]] [txt "retry"]
+      (* Render a single arch job with status icon *)
+      let arch_item (job : Db.job) =
+        Html.(
+          li ~a:[a_style "display: inline-block; margin-right: 12px;"] [
+            status_icon job.status job.exit_code;
+            txt " ";
+            (* Internal failures have no log, so don't link them *)
+            if job.status = "failed" then
+              span ~a:[a_style "color: #656d76;"] [txt job.arch]
+            else
+              a ~a:[a_href (Printf.sprintf "/job/%d/logs" job.id);
+                    a_style "color: #0366d6; text-decoration: none;"] [txt job.arch];
           ]
-        in
-        li ~a:[a_class ["job-item"]] [
-          div ~a:[a_class ["job-variant"]] [txt j.variant];
-          div ~a:[a_class ["job-status"]] [
-            span ~a:[a_class [status_class j.status j.exit_code]]
-              [txt (status_text j.status j.exit_code)]
-          ];
-          div ~a:[a_class ["job-slurm-id"]] [txt slurm_id];
-          div ~a:[a_class ["job-exit-code"]] [
-            txt (match j.exit_code with Some c -> string_of_int c | None -> "-")
-          ];
-          div ~a:[a_class ["job-actions"]] [
-            logs_link;
-            retry_button;
-          ];
-        ]
+        )
       in
 
-      let package_group (package, package_jobs) =
+      (* Group jobs within a compiler by package, then render package with its archs *)
+      let package_item (package, package_jobs) =
         Html.(
-          div ~a:[a_class ["package-group"]] [
-            div ~a:[a_class ["package-header"]] [txt package];
-            ul ~a:[a_class ["job-list"]] (List.map job_item package_jobs);
+          li ~a:[a_style "margin: 4px 0;"] [
+            strong ~a:[a_style "color: #24292f;"] [txt package];
+            ul ~a:[a_style "list-style: none; padding-left: 20px; margin: 2px 0;"]
+              (List.map arch_item package_jobs);
+          ]
+        )
+      in
+
+      (* Render a compiler version with its packages *)
+      let compiler_section (ocaml_version, compiler_jobs) =
+        (* Group by package within this compiler *)
+        let jobs_by_package =
+          List.fold_left (fun acc (job : Db.job) ->
+            let existing = try List.assoc job.package acc with Not_found -> [] in
+            (job.package, job :: existing) :: List.remove_assoc job.package acc
+          ) [] compiler_jobs
+          |> List.map (fun (pkg, jobs) -> (pkg, List.rev jobs))
+          |> List.sort (fun (a, _) (b, _) -> String.compare a b)
+        in
+        Html.(
+          div ~a:[a_style "margin: 16px 0;"] [
+            h3 ~a:[a_style "margin: 8px 0; font-size: 15px; font-weight: 600; color: #24292f;"]
+              [txt ocaml_version];
+            ul ~a:[a_style "list-style: none; padding-left: 20px; margin: 4px 0;"]
+              (List.map package_item jobs_by_package);
           ]
         )
       in
@@ -445,8 +465,8 @@ let pr_page db pr_number =
           p [txt (Printf.sprintf "Progress: %d / %d jobs completed" pr.completed_jobs pr.total_jobs)];
           p [txt (Printf.sprintf "Failed: %d" pr.failed_jobs)];
         ];
-        h2 [txt "Build Jobs"];
-        div ~a:[a_class ["tree-view"]] (List.map package_group jobs_by_package);
+        h2 [txt "Compilers"];
+        div (List.map compiler_section jobs_by_compiler);
       ] in
 
       Lwt.return (page ~title:(Printf.sprintf "PR #%d" pr_number) content)
@@ -470,7 +490,8 @@ let jobs_page db =
       td [a ~a:[a_href (Printf.sprintf "/pr/%d" job.pr_number); a_class ["pr-link"]]
             [txt (Printf.sprintf "#%d" job.pr_number)]];
       td [txt job.package];
-      td [txt job.variant];
+      td [txt job.arch];
+      td [txt job.ocaml_version];
       td ~a:[a_class [status_class job.status job.exit_code]]
         [txt (status_text job.status job.exit_code)];
       td [txt slurm_id];
@@ -493,7 +514,8 @@ let jobs_page db =
         tr [
           th [txt "PR"];
           th [txt "Package"];
-          th [txt "Variant"];
+          th [txt "Arch"];
+          th [txt "OCaml"];
           th [txt "Status"];
           th [txt "Slurm ID"];
           th [txt "Logs"];
@@ -577,7 +599,7 @@ let handle_request db _conn req _body =
                     ) in
 
                     let content = Html.[
-                      h1 [txt (Printf.sprintf "Job #%d: %s (%s)" job_id job.package job.variant)];
+                      h1 [txt (Printf.sprintf "Job #%d: %s (%s %s)" job_id job.package job.arch job.ocaml_version)];
                       retry_button;
                       h2 [txt "Build Log"];
                       pre [txt log_content];

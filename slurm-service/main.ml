@@ -250,49 +250,35 @@ let handle_request config db_promise _conn req body =
         | None ->
             Cohttp_lwt_unix.Server.respond_string ~status:`Not_found ~body:"Job not found" ()
         | Some job ->
-            (* Get PR info *)
-            let* pr_opt = Db.get_pr db job.pr_number in
-            begin match pr_opt with
-            | None ->
-                Cohttp_lwt_unix.Server.respond_string ~status:`Not_found ~body:"PR not found" ()
-            | Some _pr ->
-                (* Calculate worktree path *)
-                let base_dir = Filename.dirname config.opam_repo_path in
-                let worktree_path = Filename.concat (Filename.concat base_dir "worktrees")
-                  (Printf.sprintf "pr%d" job.pr_number) in
+            (* Calculate worktree path *)
+            let base_dir = Filename.dirname config.opam_repo_path in
+            let worktree_path = Filename.concat (Filename.concat base_dir "worktrees")
+              (Printf.sprintf "pr%d" job.pr_number) in
 
-                (* Parse variant to get arch and ocaml_version *)
-                begin match String.split_on_char '-' job.variant with
-                | arch :: ocaml_version :: _ ->
-                    (* Create Slurm build spec *)
-                    let spec : Slurm.build_spec = {
-                      pr_number = job.pr_number;
-                      commit_hash = job.commit_hash;
-                      package = job.package;
-                      arch;
-                      ocaml_version;
-                      opam_repo_path = worktree_path;
-                      cache_dir = config.cache_dir;
-                      work_dir = config.work_dir;
-                    } in
+            (* Create Slurm build spec from job record *)
+            let spec : Slurm.build_spec = {
+              pr_number = job.pr_number;
+              commit_hash = job.commit_hash;
+              package = job.package;
+              arch = job.arch;
+              ocaml_version = job.ocaml_version;
+              opam_repo_path = worktree_path;
+              cache_dir = config.cache_dir;
+              work_dir = config.work_dir;
+            } in
 
-                    (* Submit to Slurm *)
-                    let* submit_result = Slurm.submit_build spec in
-                    begin match submit_result with
-                    | Ok slurm_job_id ->
-                        (* Update job record *)
-                        let* () = Db.update_job_submitted db ~job_id ~slurm_job_id in
-                        Log.info (fun f -> f "Retried job %d as Slurm job %s" job_id slurm_job_id);
-                        Cohttp_lwt_unix.Server.respond_string ~status:`OK ~body:"Job retried successfully" ()
-                    | Error (`Msg msg) ->
-                        Log.err (fun f -> f "Failed to retry job %d: %s" job_id msg);
-                        Cohttp_lwt_unix.Server.respond_string ~status:`Internal_server_error
-                          ~body:(Printf.sprintf "Failed to submit job: %s" msg) ()
-                    end
-                | _ ->
-                    Cohttp_lwt_unix.Server.respond_string ~status:`Bad_request
-                      ~body:"Invalid variant format" ()
-                end
+            (* Submit to Slurm *)
+            let* submit_result = Slurm.submit_build spec in
+            begin match submit_result with
+            | Ok slurm_job_id ->
+                (* Update job record *)
+                let* () = Db.update_job_submitted db ~job_id ~slurm_job_id in
+                Log.info (fun f -> f "Retried job %d as Slurm job %s" job_id slurm_job_id);
+                Cohttp_lwt_unix.Server.respond_string ~status:`OK ~body:"Job retried successfully" ()
+            | Error (`Msg msg) ->
+                Log.err (fun f -> f "Failed to retry job %d: %s" job_id msg);
+                Cohttp_lwt_unix.Server.respond_string ~status:`Internal_server_error
+                  ~body:(Printf.sprintf "Failed to submit job: %s" msg) ()
             end
       with _ ->
         Cohttp_lwt_unix.Server.respond_string ~status:`Bad_request ~body:"Invalid job ID" ()

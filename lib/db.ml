@@ -10,7 +10,8 @@ type job = {
   pr_number : int;
   commit_hash : string;
   package : string;
-  variant : string;
+  arch : string;
+  ocaml_version : string;
   slurm_job_id : string option;
   status : string;
   exit_code : int option;
@@ -66,7 +67,8 @@ let init path =
       pr_number INTEGER NOT NULL,
       commit_hash TEXT NOT NULL,
       package TEXT NOT NULL,
-      variant TEXT NOT NULL,
+      arch TEXT NOT NULL,
+      ocaml_version TEXT NOT NULL,
       slurm_job_id TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       exit_code INTEGER,
@@ -111,21 +113,22 @@ let close t =
   ) ()
 
 (** Create a new job *)
-let create_job t ~pr_number ~commit_hash ~package ~variant ~log_file =
+let create_job t ~pr_number ~commit_hash ~package ~arch ~ocaml_version ~log_file =
   Lwt_mutex.with_lock t.mutex (fun () ->
     let now = Unix.gettimeofday () in
     let* result = with_stmt t.db
-      "INSERT INTO jobs (pr_number, commit_hash, package, variant, output_file, error_file, created_at, updated_at) \
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO jobs (pr_number, commit_hash, package, arch, ocaml_version, output_file, error_file, created_at, updated_at) \
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
       (fun stmt ->
         let _ = Sqlite3.bind stmt 1 (Sqlite3.Data.INT (Int64.of_int pr_number)) in
         let _ = Sqlite3.bind stmt 2 (Sqlite3.Data.TEXT commit_hash) in
         let _ = Sqlite3.bind stmt 3 (Sqlite3.Data.TEXT package) in
-        let _ = Sqlite3.bind stmt 4 (Sqlite3.Data.TEXT variant) in
-        let _ = Sqlite3.bind stmt 5 (Sqlite3.Data.TEXT log_file) in
-        let _ = Sqlite3.bind stmt 6 (Sqlite3.Data.NULL) in  (* error_file no longer used *)
-        let _ = Sqlite3.bind stmt 7 (Sqlite3.Data.FLOAT now) in
+        let _ = Sqlite3.bind stmt 4 (Sqlite3.Data.TEXT arch) in
+        let _ = Sqlite3.bind stmt 5 (Sqlite3.Data.TEXT ocaml_version) in
+        let _ = Sqlite3.bind stmt 6 (Sqlite3.Data.TEXT log_file) in
+        let _ = Sqlite3.bind stmt 7 (Sqlite3.Data.NULL) in  (* error_file no longer used *)
         let _ = Sqlite3.bind stmt 8 (Sqlite3.Data.FLOAT now) in
+        let _ = Sqlite3.bind stmt 9 (Sqlite3.Data.FLOAT now) in
         match Sqlite3.step stmt with
         | Sqlite3.Rc.DONE -> Ok ()
         | rc -> Error (`Msg (Sqlite3.Rc.to_string rc))
@@ -183,7 +186,7 @@ let update_job_status t ~job_id ~status ~exit_code =
 (** Helper to parse job from row *)
 let parse_job row =
   match row with
-  | [| Sqlite3.Data.INT id; INT pr; TEXT hash; TEXT pkg; TEXT var;
+  | [| Sqlite3.Data.INT id; INT pr; TEXT hash; TEXT pkg; TEXT arch; TEXT ocaml_version;
        slurm_id; TEXT status; exit_code; out_file; err_file;
        FLOAT created; FLOAT updated |] ->
       Some {
@@ -191,7 +194,8 @@ let parse_job row =
         pr_number = Int64.to_int pr;
         commit_hash = hash;
         package = pkg;
-        variant = var;
+        arch;
+        ocaml_version;
         slurm_job_id = (match slurm_id with TEXT s -> Some s | _ -> None);
         status;
         exit_code = (match exit_code with INT i -> Some (Int64.to_int i) | _ -> None);
@@ -206,7 +210,7 @@ let parse_job row =
 let get_job t id =
   Lwt_mutex.with_lock t.mutex (fun () ->
     with_stmt t.db
-      "SELECT id, pr_number, commit_hash, package, variant, slurm_job_id, status, \
+      "SELECT id, pr_number, commit_hash, package, arch, ocaml_version, slurm_job_id, status, \
        exit_code, output_file, error_file, created_at, updated_at FROM jobs WHERE id = ?"
       (fun stmt ->
         let _ = Sqlite3.bind stmt 1 (Sqlite3.Data.INT (Int64.of_int id)) in
@@ -222,7 +226,7 @@ let get_job t id =
 let get_jobs_by_pr t pr_number =
   Lwt_mutex.with_lock t.mutex (fun () ->
     with_stmt t.db
-      "SELECT id, pr_number, commit_hash, package, variant, slurm_job_id, status, \
+      "SELECT id, pr_number, commit_hash, package, arch, ocaml_version, slurm_job_id, status, \
        exit_code, output_file, error_file, created_at, updated_at FROM jobs WHERE pr_number = ?"
       (fun stmt ->
         let _ = Sqlite3.bind stmt 1 (Sqlite3.Data.INT (Int64.of_int pr_number)) in
@@ -243,7 +247,7 @@ let get_jobs_by_pr t pr_number =
 let get_jobs_by_commit t commit_hash =
   Lwt_mutex.with_lock t.mutex (fun () ->
     with_stmt t.db
-      "SELECT id, pr_number, commit_hash, package, variant, slurm_job_id, status, \
+      "SELECT id, pr_number, commit_hash, package, arch, ocaml_version, slurm_job_id, status, \
        exit_code, output_file, error_file, created_at, updated_at FROM jobs WHERE commit_hash = ?"
       (fun stmt ->
         let _ = Sqlite3.bind stmt 1 (Sqlite3.Data.TEXT commit_hash) in
@@ -264,7 +268,7 @@ let get_jobs_by_commit t commit_hash =
 let get_pending_jobs t =
   Lwt_mutex.with_lock t.mutex (fun () ->
     with_stmt t.db
-      "SELECT id, pr_number, commit_hash, package, variant, slurm_job_id, status, \
+      "SELECT id, pr_number, commit_hash, package, arch, ocaml_version, slurm_job_id, status, \
        exit_code, output_file, error_file, created_at, updated_at FROM jobs WHERE status = 'pending'"
       (fun stmt ->
         let rec collect acc =
@@ -284,7 +288,7 @@ let get_pending_jobs t =
 let get_running_jobs t =
   Lwt_mutex.with_lock t.mutex (fun () ->
     with_stmt t.db
-      "SELECT id, pr_number, commit_hash, package, variant, slurm_job_id, status, \
+      "SELECT id, pr_number, commit_hash, package, arch, ocaml_version, slurm_job_id, status, \
        exit_code, output_file, error_file, created_at, updated_at FROM jobs \
        WHERE status IN ('submitted', 'running')"
       (fun stmt ->
