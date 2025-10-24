@@ -4,6 +4,10 @@ RUN sudo apt-get update && sudo apt-get install libev-dev capnproto m4 pkg-confi
 RUN cd ~/opam-repository && git fetch origin master && git reset --hard 1abfcdbf14f12a32c14d0d6e078d94634fdcc07a && opam update
 COPY --chown=opam opam-repo-ci-api.opam opam-repo-ci-web.opam opam-repo-ci-service.opam opam-ci-check.opam /src/
 WORKDIR /src
+RUN opam pin add -yn ocluster-api https://github.com/mtelvers/ocluster.git#day10 && \
+    opam pin add -yn current_ocluster https://github.com/mtelvers/ocluster.git#day10 && \
+    opam pin add -yn ocluster https://github.com/mtelvers/ocluster.git#day10 && \
+    opam pin add -yn ocluster-worker https://github.com/mtelvers/ocluster.git#day10
 RUN opam install -y --deps-only .
 ADD --chown=opam . .
 RUN opam exec -- dune build ./_build/install/default/bin/opam-repo-ci-web

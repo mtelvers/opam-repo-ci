@@ -5,6 +5,10 @@ RUN cd ~/opam-repository && git fetch origin master && git reset --hard 1abfcdbf
 COPY --chown=opam opam-repo-ci-service.opam opam-repo-ci-api.opam opam-ci-check.opam /src/
 WORKDIR /src
 ENV OPAMSOLVERTIMEOUT=900
+RUN opam pin add -yn ocluster-api https://github.com/mtelvers/ocluster.git#day10 && \
+    opam pin add -yn current_ocluster https://github.com/mtelvers/ocluster.git#day10 && \
+    opam pin add -yn ocluster https://github.com/mtelvers/ocluster.git#day10 && \
+    opam pin add -yn ocluster-worker https://github.com/mtelvers/ocluster.git#day10
 RUN opam install -y --deps-only .
 ADD --chown=opam . .
 RUN opam exec -- dune build ./_build/install/default/bin/opam-repo-ci-service ./_build/install/default/bin/opam-ci-check
@@ -15,5 +19,7 @@ RUN git config --global user.name "ocaml" && git config --global user.email "ci"
 WORKDIR /var/lib/ocurrent
 ENTRYPOINT ["dumb-init", "/usr/local/bin/opam-repo-ci-service"]
 ENV OCAMLRUNPARAM=a=2
+COPY --link create-config.sh .
+RUN ./create-config.sh
 COPY --from=build /src/_build/install/default/bin/opam-repo-ci-service /usr/local/bin/
 COPY --from=build /src/_build/install/default/bin/opam-ci-check /usr/local/bin/

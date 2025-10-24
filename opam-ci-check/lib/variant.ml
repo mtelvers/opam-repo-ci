@@ -19,7 +19,19 @@ let ocaml_version_to_string t =
 let arch t = t.arch
 
 let docker_tag t =
-  t.distribution ^ "-ocaml-" ^ ocaml_version_to_string t
+  (* Truncate to X.Y for Docker image compatibility *)
+  let ocaml_version_short =
+    match Ocaml_version.of_string t.ocaml_version with
+    | Ok v ->
+        let v_short = Ocaml_version.with_just_major_and_minor v in
+        Ocaml_version.to_string v_short
+    | Error _ -> t.ocaml_version (* Fallback if parsing fails *)
+  in
+  let variant = match t.ocaml_variant with
+    | None -> ""
+    | Some variant -> "-" ^ variant
+  in
+  t.distribution ^ "-ocaml-" ^ ocaml_version_short ^ variant
   |> String.map (function
     | '+' | '~' -> '-'
     | x -> x)

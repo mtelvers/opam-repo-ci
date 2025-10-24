@@ -39,19 +39,23 @@ let run_job ?buffer ~job build_job =
   | Ok _ as x -> Lwt.return x
 
 let pool_of_variant v =
-  let os = match Variant.os v with
-    | `Macos -> "macos"
-    | `Freebsd -> "freebsd"
-    | `Linux -> "linux"
-  in
-  let arch = match Variant.arch v with
-    | `X86_64 | `I386 -> "x86_64"
-    | `Aarch32 | `Aarch64 -> "arm64"
-    | `Ppc64le -> "ppc64"
-    | `S390x -> "s390x"
-    | `Riscv64 -> "riscv64"
-  in
-  os^"-"^arch
+  (* Temporary hack: override pool if CI_POOL is set *)
+  match Sys.getenv_opt "CI_POOL" with
+  | Some pool -> pool
+  | None ->
+      let os = match Variant.os v with
+        | `Macos -> "macos"
+        | `Freebsd -> "freebsd"
+        | `Linux -> "linux"
+      in
+      let arch = match Variant.arch v with
+        | `X86_64 | `I386 -> "x86_64"
+        | `Aarch32 | `Aarch64 -> "arm64"
+        | `Ppc64le -> "ppc64"
+        | `S390x -> "s390x"
+        | `Riscv64 -> "riscv64"
+      in
+      os^"-"^arch
 
 module Op = struct
   type nonrec t = {
@@ -84,6 +88,16 @@ module Op = struct
 
   module Value = Current.String
 
+  (* Helper to check if a line looks like a valid package name.version *)
+  let is_valid_package_line line =
+    let line = String.trim line in
+    if line = "" then false
+    else
+      try
+        let _ = OpamPackage.of_string line in
+        true
+      with _ -> false
+
   let parse_output ty job build_job =
     let buffer =
       match ty with
@@ -94,10 +108,19 @@ module Op = struct
     match buffer with
     | None -> Lwt_result.return ""
     | Some buffer ->
-      match Astring.String.cuts ~sep:"\n@@@OUTPUT\n" (Buffer.contents buffer) with
-      | [_; output; _] -> Lwt_result.return output
-      | [_; rest ] when Astring.String.is_prefix ~affix:"@@@OUTPUT\n" rest -> Lwt_result.return ""
-      | _ -> Lwt_result.fail (`Msg "Missing output from command")
+      (* Parse output by extracting valid opam package names from each line *)
+      let lines = String.split_on_char '\n' (Buffer.contents buffer) in
+      let packages = List.filter is_valid_package_line lines in
+      Lwt_result.return (String.concat "\n" packages)
+
+  (* Helper to create Day10 payload *)
+  let day10_payload ~sub_command ~package_name ~ocaml_version ~with_test builder =
+    let open Cluster_api.Raw.Builder in
+    let day10 = Day10.init_pointer builder in
+    Day10.sub_command_set day10 sub_command;
+    Day10.package_name_set day10 package_name;
+    Day10.ocaml_version_set day10 ocaml_version;
+    Day10.with_test_set day10 with_test
 
   let build { config; master; urgent; base } job
       { Key.pool; commit; variant; ty } =
@@ -106,27 +129,37 @@ module Op = struct
     let timeout = match Variant.arch variant with
       | `Riscv64 -> Int64.mul timeout 2L
       | _ -> timeout in
-    let os = match Variant.os variant with
-      | `Macos | `Linux | `Freebsd -> `Unix
+
+    (* Extract Day10 job parameters from the build specification *)
+    let (sub_command, package_name, with_test) = match ty with
+      | `Opam (`Build { revdep = Some revdep; with_tests; _ }, _pkg) ->
+          (* When testing a revdep, test the revdep package, not the original package *)
+          ("health-check", OpamPackage.to_string revdep, with_tests)
+      | `Opam (`Build { revdep = None; with_tests; _ }, pkg) ->
+          (* When testing the package itself *)
+          ("health-check", OpamPackage.to_string pkg, with_tests)
+      | `Opam (`List_revdeps _, pkg) ->
+          ("list", OpamPackage.to_string pkg, false)
     in
-    let build_config = {Spec.variant; ty} in
+    let commit_sha = Git.Commit_id.hash commit in
+    let ocaml_version = "ocaml." ^ Variant.ocaml_version_to_string variant in
+
     Current.Job.write job
       (Fmt.str "@.\
-                To reproduce locally:@.@.\
-                cd $(mktemp -d)@.\
-                %a@.\
-                git fetch origin master@.\
-                git merge --no-edit %s@.\
-                cat > ../Dockerfile <<'END-OF-DOCKERFILE'@.\
-                \o033[34m%s\o033[0m@.\
-                END-OF-DOCKERFILE@.\
-                docker build -f ../Dockerfile .@.@."
-         Current_git.Commit_id.pp_user_clone commit
-         master
-         (Obuilder_spec.Docker.dockerfile_of_spec ~os ~buildkit:false (Opam_build.build_spec ~for_docker:true ~base build_config)));
-    let spec_str = Fmt.to_to_string Obuilder_spec.pp (Opam_build.build_spec ~for_docker:false ~base build_config) in
-    let action = Cluster_api.Submission.obuilder_build spec_str in
-    let src = (Git.Commit_id.repo commit, [master; Git.Commit_id.hash commit]) in
+                Day10 job:@.@.\
+                Sub-command: %s@.\
+                Package: %s@.\
+                OCaml version: %s@.\
+                Commit SHA: %s@.\
+                With test: %b@.@."
+         sub_command package_name ocaml_version commit_sha with_test);
+
+    (* Create Day10 custom action *)
+    let action = Cluster_api.Submission.custom_build @@
+      Cluster_api.Custom.v ~kind:"day10" (day10_payload ~sub_command ~package_name ~ocaml_version ~with_test)
+    in
+
+    let src = (Git.Commit_id.repo commit, [master; commit_sha]) in
     let cache_hint =
       let pkg =
         match ty with
@@ -134,10 +167,10 @@ module Op = struct
         | `Opam (`List_revdeps _, pkg)
         | `Opam (`Build _, pkg) -> OpamPackage.to_string pkg
       in
-      Fmt.str "%s-%s-%s" (Spec.base_to_string base) pkg (Git.Commit_id.hash commit)
+      Fmt.str "%s-%s-%s" (Spec.base_to_string base) pkg commit_sha
     in
     Current.Job.log job "Using cache hint %S" cache_hint;
-    Current.Job.log job "Using OBuilder spec:@.%s@." spec_str;
+    Current.Job.log job "Using Day10 job: sub_command=%s package=%s ocaml_version=%s" sub_command package_name ocaml_version;
     let build_pool = Current_ocluster.Connection.pool ?urgent ~job ~pool ~action ~cache_hint ~src connection in
     Current.Job.start_with ~pool:build_pool job ~timeout ~level:Current.Level.Average >>=
     parse_output ty job

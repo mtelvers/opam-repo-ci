@@ -58,11 +58,12 @@ let compilers ?(minimal=false) ~arch ~build () =
       Opam_ci_check.Compiler_version.all_supported
   in
   List.map (fun v ->
-    let v = Ocaml_version.with_just_major_and_minor v in
-    let revdeps = List.exists (Ocaml_version.equal v) default_compilers in (* TODO: Remove this when the cluster is ready *)
-    let v = Ocaml_version.to_string v in
-    let variant = Variant.v ~arch ~distro:master_distro ~compiler:(v, None) in
-    build ~opam_version ~lower_bounds:true ~revdeps v variant
+    let v_short = Ocaml_version.with_just_major_and_minor v in
+    let revdeps = List.exists (Ocaml_version.equal v_short) default_compilers in (* TODO: Remove this when the cluster is ready *)
+    let v_full = Ocaml_version.to_string v in
+    let v_label = Ocaml_version.to_string v_short in
+    let variant = Variant.v ~arch ~distro:master_distro ~compiler:(v_full, None) in
+    build ~opam_version ~lower_bounds:true ~revdeps v_label variant
   ) versions
 
 let is_supported_linux_distro distro =
@@ -84,16 +85,31 @@ let linux_distributions ~arch ~build =
     let label = Fmt.str "%s-ocaml-%s" distro (Variant.ocaml_version_to_string variant) in
     build ~opam_version ~lower_bounds:false ~revdeps:false label variant
   in
+  (* Parse CI_DISTROS environment variable - comma-separated list of distributions to enable *)
+  let enabled_distros =
+    match Sys.getenv_opt "CI_DISTROS" with
+    | None -> None (* Enable all if not specified *)
+    | Some "" -> Some []
+    | Some s -> Some (String.split_on_char ',' s |> List.map String.trim)
+  in
+  let is_distro_enabled distro_tag =
+    match enabled_distros with
+    | None -> true (* All enabled *)
+    | Some list -> List.mem distro_tag list
+  in
   List.fold_left (fun acc comp ->
     let comp = Ocaml_version.to_string comp in
     List.fold_left (fun acc' distro ->
         if is_supported_linux_distro distro then
           let distro = Distro.tag_of_distro distro in
-          build ~arch ~distro ~compiler:(comp, None) :: acc'
+          if is_distro_enabled distro then
+            build ~arch ~distro ~compiler:(comp, None) :: acc'
+          else
+            acc'
         else
           acc'
     ) acc (Distro.active_distros arch)
-  ) [] default_compilers
+  ) [] default_compilers_full
 
 let macos ~build =
   let build ~distro ~arch ~compiler =
@@ -106,7 +122,7 @@ let macos ~build =
     List.fold_left (fun acc arch ->
       build ~distro:Variant.macos_homebrew ~arch ~compiler:(comp, None) :: acc
     ) acc [`Aarch64; `X86_64]
-  ) [] default_compilers
+  ) [] default_compilers_full
 
 let freebsd ~build =
   let build ~distro ~arch ~compiler =
@@ -119,7 +135,7 @@ let freebsd ~build =
     List.fold_left (fun acc arch ->
       build ~distro:Variant.freebsd ~arch ~compiler:(comp, None) :: acc
     ) acc [`X86_64]
-  ) [] default_compilers
+  ) [] default_compilers_full
 
 (* Non-linux-x86_64 compiler variants. eg ls390x, arm64, flambda, afl etc *)
 let extras ~build =
@@ -131,7 +147,7 @@ let extras ~build =
   in
   let master_distro = Distro.tag_of_distro master_distro in
   List.fold_left (fun acc comp_full ->
-    let comp = Ocaml_version.to_string (Ocaml_version.with_just_major_and_minor comp_full) in
+    let comp = Ocaml_version.to_string comp_full in
     let switches =
       List.filter_map (fun v ->
         match Ocaml_version.extra v with
@@ -140,7 +156,8 @@ let extras ~build =
             (* TODO: This should be in ocaml-version or ocaml-dockerfile *)
             (* TODO: The same code is used in docker-base-images *)
             let label = String.map (function '+' -> '-' | c -> c) label in
-            Some (build ~opam_version ~arch:`X86_64 ~distro:master_distro ~compiler:(comp, Some label) "")
+            let v_str = Ocaml_version.to_string v in
+            Some (build ~opam_version ~arch:`X86_64 ~distro:master_distro ~compiler:(v_str, Some label) "")
       ) (Ocaml_version.Opam.V2.switches `X86_64 comp_full)
     in
     let arches =
@@ -265,14 +282,20 @@ let with_cluster ~ocluster ~analysis ~lint ~master source =
     |> List.filter_map get_significant_available_pkg) analysis
   in
   let build = build (module Builder) ~analysis ~pkgopts ~master ~source in
-  [
-    Node.leaf ~label:"(lint)" (Node.action `Linted lint);
-    Node.branch ~label:"compilers" (compilers ~arch:`X86_64 ~build ());
-    Node.branch ~label:"distributions" (linux_distributions ~arch:`X86_64 ~build);
-    Node.branch ~label:"macos" (macos ~build);
-    Node.branch ~label:"freebsd" (freebsd ~build);
-    Node.branch ~label:"extras" (extras ~build);
-  ]
+  (* Parse CI_DISABLE environment variable - comma-separated list of platforms to disable *)
+  let disabled_platforms =
+    match Sys.getenv_opt "CI_DISABLE" with
+    | None | Some "" -> []
+    | Some s -> String.split_on_char ',' s |> List.map String.trim
+  in
+  let is_enabled platform = not (List.mem platform disabled_platforms) in
+
+  [Node.leaf ~label:"(lint)" (Node.action `Linted lint)] @
+  (if is_enabled "compilers" then [Node.branch ~label:"compilers" (compilers ~arch:`X86_64 ~build ())] else []) @
+  (if is_enabled "distributions" then [Node.branch ~label:"distributions" (linux_distributions ~arch:`X86_64 ~build)] else []) @
+  (if is_enabled "macos" then [Node.branch ~label:"macos" (macos ~build)] else []) @
+  (if is_enabled "freebsd" then [Node.branch ~label:"freebsd" (freebsd ~build)] else []) @
+  (if is_enabled "extras" then [Node.branch ~label:"extras" (extras ~build)] else [])
 
 let with_docker ~host_arch ~analysis ~lint ~master source =
   let module Builder : Build_intf.S = Local_build in
