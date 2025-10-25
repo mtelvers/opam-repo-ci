@@ -59,10 +59,10 @@ let check_job db job =
           end else
             Lwt.return (Ok false)
 
-(** Check all running jobs *)
+(** Check all active jobs (submitted to Slurm but not terminal) *)
 let check_jobs db =
-  let* jobs = Db.get_running_jobs db in
-  Log.info (fun f -> f "Checking %d running jobs" (List.length jobs));
+  let* jobs = Db.get_active_jobs db in
+  Log.info (fun f -> f "Checking %d active jobs" (List.length jobs));
 
   let rec check_all updated = function
     | [] -> Lwt.return (Ok updated)

@@ -79,6 +79,9 @@ val get_pending_jobs : t -> job list Lwt.t
 val get_running_jobs : t -> job list Lwt.t
 (** Get all jobs with status = running *)
 
+val get_active_jobs : t -> job list Lwt.t
+(** Get all jobs that have been submitted to Slurm but haven't reached a terminal state *)
+
 (** PR operations *)
 
 val create_or_update_pr :

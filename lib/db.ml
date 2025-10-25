@@ -305,6 +305,27 @@ let get_running_jobs t =
       )
   )
 
+(** Get active jobs (submitted to Slurm but not in terminal state) *)
+let get_active_jobs t =
+  Lwt_mutex.with_lock t.mutex (fun () ->
+    with_stmt t.db
+      "SELECT id, pr_number, commit_hash, package, arch, ocaml_version, slurm_job_id, status, \
+       exit_code, output_file, error_file, created_at, updated_at FROM jobs \
+       WHERE slurm_job_id IS NOT NULL AND status NOT IN ('completed', 'failed', 'cancelled')"
+      (fun stmt ->
+        let rec collect acc =
+          match Sqlite3.step stmt with
+          | Sqlite3.Rc.ROW ->
+              let row = Sqlite3.row_data stmt in
+              (match parse_job row with
+               | Some job -> collect (job :: acc)
+               | None -> collect acc)
+          | _ -> List.rev acc
+        in
+        collect []
+      )
+  )
+
 (** Create or update PR *)
 let create_or_update_pr t ~pr_number ~commit_hash ~total_jobs =
   Lwt_mutex.with_lock t.mutex (fun () ->
