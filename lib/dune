@@ -17,4 +17,5 @@
   yojson
   cohttp
   cohttp-lwt
-  cohttp-lwt-unix))
+  cohttp-lwt-unix
+  ocaml-slurm))

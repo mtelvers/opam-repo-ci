@@ -32,6 +32,7 @@ depends: [
   "ppx_deriving" {>= "5.2.1"}
   "ppx_deriving_yojson"
   "sexplib" {>= "v0.16.0"}
+  "ocaml-slurm"
 ]
 conflicts: [
   "conduit-lwt-unix" {< "4.0.1"}
